@@ -4,52 +4,39 @@
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 
-Turn the AI coding agents sitting on your team's workstations into coworkers:
-they dispatch tasks to each other, execute them headlessly, and keep the humans
-informed over IM — arrivals, results, failures, follow-up questions, approvals.
+Turn the AI coding agents on your team's workstations into coworkers. They
+dispatch tasks to each other, run them headlessly, and keep the humans
+informed over IM: arrivals, results, failures, follow-up questions, approvals.
 
 > "A2A" here just means agent-to-agent. This project is **not** an
 > implementation of the Google A2A protocol and is not affiliated with it.
 
+![architecture](docs/architecture.png)
+
+*Two identical workstations, each with a coding agent (a2a-team skill loaded)
+and a worker; either can dispatch to the other. The server holds the queue,
+leases, and event log, and pushes to the team's IM.*
+
 ![admin console](docs/admin-console.png)
 
-*The read-only admin console — every agent (online state, owner, capability
+*The read-only admin console: every agent (online state, owner, capability
 description), every task, and the full auto-refreshing event log, pinned to
 the newest line.*
 
-## ✅ What works today
+## What works today
 
 | Area | Supported | Not supported |
 |---|---|---|
-| IM notifications | feishu, dingtalk, wecom, telegram, slack, discord (+ built-in `log`) | MS Teams, WhatsApp (need a public callback / cloud API) |
-| Agent runtimes | any headless CLI via the `command` driver (Claude Code, Codex, Gemini CLI, … config-only); human-run tasks via the `manual` driver | webhook/HTTP agent services |
-| Platforms | Linux server · Windows / Linux / macOS workers (no admin rights, outbound-only) | HA / multi-server |
-| IM interactivity | text notifications | action cards / buttons (approve & abort from IM) |
+| IM notifications | feishu, dingtalk, wecom, telegram, slack, discord (+ built-in `log`) | MS Teams, WhatsApp (need a public callback or cloud API) |
+| Agent runtimes | any headless CLI via the `command` driver (Claude Code, Codex, Gemini CLI, config only); human-run tasks via the `manual` driver | webhook/HTTP agent services |
+| Platforms | Linux server; Windows / Linux / macOS workers (no admin rights, outbound only) | HA / multi-server |
+| IM interactivity | text notifications | action cards and buttons (approve or abort from IM) |
 
-By design and not planned: auto-retry or self-healing (failures are made
-visible, humans decide), per-task driver selection, streaming, parallel tasks
-per worker (one at a time, serial).
+Some things are excluded on purpose: auto-retry and self-healing (failures are
+made visible, humans decide), per-task driver selection, streaming, and
+parallel tasks per worker. One worker runs one task at a time.
 
-## 🧭 Why a2a-cowork — and how it differs from neighbors
-
-Your team already runs capable agents: Claude Code here, Codex there, Gemini
-on a third machine. What's missing is the boring part — a dispatch network
-they all join, and a way for humans to stay in the loop without watching
-consoles. a2a-cowork is exactly that layer, nothing more:
-
-| | a2a-cowork | IM gateways (OpenClaw-style) | AgentTeams | CrewAI / LangGraph / AutoGen |
-|---|---|---|---|---|
-| What it is | intranet dispatch network for existing CLI agents | humans chat with their own agent over IM | K8s manager-worker containers + Matrix rooms | frameworks you code multi-agent apps in |
-| Agents join from | any workstation — outbound-only, config-only, no code | one machine, one gateway | containers in a cluster | in-process |
-| IM's role | oversight: arrivals / results / failures / approvals pushed to owners | the control surface itself | self-hosted Matrix rooms | — |
-| Human approval gates | per-agent: auto / notify-run / manual | — | — | you build it |
-| Weight | one Python server + SQLite, zero SDK deps | local gateway | K8s + Helm + MinIO + AI gateway | library |
-
-Design stance: **failure stays visible, nothing self-heals silently** — no
-auto-retry, no restart loops; every anomaly ends in a terminal state plus a
-notification plus an audit event, and a human decides what happens next.
-
-## 🏗 How it works
+## How it works
 
 ```mermaid
 flowchart TB
@@ -61,86 +48,103 @@ flowchart TB
     S --> B["read-only /admin console<br/>agents · tasks · full event log"]
 ```
 
-- **Star topology**: one server, equal peers. Workers only make outbound
-  long-poll connections — no inbound ports, no fixed IP, no admin rights.
-- **Poll is the heartbeat**: while a driver runs, the worker keeps polling, so
-  long tasks are never misjudged as offline and cancels arrive in seconds.
-- **Leases**: results are accepted only with the matching lease on a task still
-  in flight; anything else lands as a visible `late_result` event instead of
-  silently rewriting history.
-- **rc=0 is not success**: empty output, error markers, unparseable output —
-  all reported as failures. The biggest lie an agent can tell is a clean exit
-  with nothing to show.
-- **Humans stay in the loop**: task arrivals (for `notify_run` agents),
-  completions, failures, and follow-up questions are pushed to the owners' IM;
-  `manual`-policy agents wait for an explicit approve/reject.
+- Star topology: one server, equal peers. Workers only make outbound long-poll
+  connections, so a workstation opens no inbound ports, needs no fixed IP,
+  and needs no admin rights.
+- Poll is the heartbeat. While a driver runs, the worker keeps polling, so a
+  long task is never misjudged as offline and a cancel arrives in seconds.
+- Results bind to a lease. A report with a stale lease lands as a visible
+  `late_result` event instead of silently rewriting history.
+- A zero exit code proves nothing. Empty output, error markers, or unparseable
+  output is reported as a failure; agents that "succeed" with nothing to show
+  get caught here.
+- People stay in the loop. Task arrivals (for notify-run agents), completions,
+  failures, and follow-up questions are pushed to the owners' IM, and
+  manual-policy agents wait for an explicit approve or reject.
 
-## Quick start
+## Install
 
-Requires Python 3.9+ on every machine.
+The three parts can be installed separately. Take only what you need.
 
-**1. Server** (any intranet Linux box):
+### Server (whoever runs the intranet box)
 
-```bash
-git clone <this-repo> && cd a2a-cowork/a2a-server
-cp server.example.yaml server.yaml   # set domains + tokens; IM creds optional
-./start.sh                           # venv + deps + run
-```
-
-**2. Worker** (each engineer's workstation — the machine their agent runs on):
+Fetch just the server directory, then use the one-key script. It stops a
+previous instance first, writes the new pid to `a2a.pid`, and logs to
+`a2a-server.log`:
 
 ```bash
-cd a2a-worker
-cp worker.example.yaml worker.yaml   # agent id, owner, IM id, driver cmd
-./start.sh                           # start.cmd on Windows
+mkdir a2a-server && cd a2a-server
+curl -fsSL https://github.com/Zedk42/a2a-cowork/archive/refs/heads/main.tar.gz \
+  | tar xz -C . --strip-components=2 a2a-cowork-main/a2a-server
+cp server.example.yaml server.yaml   # edit: domains + tokens, IM creds optional
+./start.sh                           # background start; ./start.sh stop to stop
 ```
 
-The worker registers itself and starts polling. All state lives on the server;
-restart or wipe a workstation freely.
+### Skill and worker (each engineer's agent)
 
-**3. Dispatch tasks** — point your coding agent at the `a2a-skill` skill, or
-use its CLI directly (it needs `pyyaml`, so use the worker's venv python):
+Fetch the [a2a-skill](https://github.com/Zedk42/a2a-cowork/tree/main/a2a-skill)
+directory into your coding agent's skills folder (for Claude Code:
+`~/.claude/skills/a2a-team`):
 
 ```bash
-PY=a2a-worker/.venv/bin/python        # .venv\Scripts\python.exe on Windows
-$PY a2a-skill/api.py agents           # who's on the team
-$PY a2a-skill/api.py new --to zhangsan-claude --text "<self-contained task>"
-$PY a2a-skill/api.py get --task <id> --wait 300    # terminal or follow-up question
-$PY a2a-skill/api.py msg --task <id> --text "<answer>"   # answer a follow-up, same task
+mkdir -p ~/.claude/skills/a2a-team && cd ~/.claude/skills/a2a-team
+curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill/SKILL.md \
+     -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill/api.py
 ```
 
-Task texts must be self-contained: background, goal, repo/doc links,
-acceptance criteria — the teammate runs it once with nothing but this text.
+Then tell your agent one sentence: "join an a2a team with the a2a-team skill".
+The skill asks the owner a few questions, fetches the worker source into
+`~/a2a-worker` by itself, writes `worker.yaml`, and starts the worker. All
+state lives on the server, so a workstation can be restarted or wiped freely.
+
+### Whole repository (development)
+
+```bash
+git clone https://github.com/Zedk42/a2a-cowork.git
+cd a2a-cowork && python tests/verify.py   # after a2a-server/.venv exists (run ./start.sh once)
+```
 
 ## Key concepts
 
 | Concept | Meaning |
 |---|---|
 | domain | a team: one directory, one task queue, one IM platform (set server-side, enforced at registration) |
-| accept policy | per agent: `auto` · `notify_run` (default: notify owner on arrival, run immediately) · `manual` (wait for owner approve/reject) |
+| accept policy | per agent: `auto`, `notify_run` (default: notify the owner on arrival and run immediately), `manual` (wait for owner approve/reject) |
 | input-required | a running agent may ask one question (`NEED_INPUT:` marker); the initiator answers on the same task id and it re-runs with full context |
 | lease / late result | results bind to a lease; stale reports become `late_result` events for humans to adjudicate |
-| anti-fake-success | exit code 0 with empty/error/unparseable output is a failure |
-| admin console | `GET /admin?token=…` — live agents, tasks, and a full auto-refreshing event log with per-task conversation views |
+| anti-fake-success | exit code 0 with empty, error-marked, or unparseable output is a failure |
+| admin console | `GET /admin?token=…`: live agents, tasks, and a full auto-refreshing event log with per-task conversation views |
 
-Clicking a task row opens its complete record — the whole conversation between
-the two agents plus every event, exactly what you need when debugging at 2am:
+Clicking a task row opens its complete record: the whole conversation between
+the two agents plus every event. This is what you want open when debugging.
 
 ![task detail](docs/admin-task-detail.png)
+
+## Verification status
+
+| Status | What |
+|---|---|
+| Verified | every task transition, leases and late results, restart detection, all four task timeouts, approvals, cancels, follow-ups, manual reports, anti-fake-success, the single-instance lock, the skill CLI, and the admin endpoints (`tests/verify.py`: real server + worker processes, exercised on macOS) |
+| Built, not yet tested live | the six IM adapters (API shapes checked against each platform's docs; no live-credential run yet); the Windows worker end to end (code paths reviewed) |
+| Planned | interactive IM cards (approve or abort from IM), MS Teams and WhatsApp, multi-server |
+
+Contributions are welcome: issues and PRs alike, with `tests/verify.py` green
+as the merge bar.
 
 ## Configuration
 
 `server.yaml` (server): `domains: [{id, token, channel?}]`, IM credentials
 (`feishu{app_id,app_secret}`, `dingtalk{app_key,app_secret,agent_id}`,
 `wecom{corp_id,corp_secret,agent_id}`, `telegram_bot_token`,
-`slack_bot_token`, `discord_bot_token`), timing knobs (offline timeout,
-dispatch grace, retention, approval timeout…). All credentials support
+`slack_bot_token`, `discord_bot_token`), and timing knobs (offline timeout,
+dispatch grace, retention, approval timeout). All credentials support
 `${ENV_VAR}` expansion.
 
-`worker.yaml` (per workstation): server URL + domain + token, agent identity
-and owner, notify binding (`channel` + platform id), `default_driver` with its
-`cmd` (prompt arrives via stdin and a task file, never argv), `timeout`,
-`output: last_json|tail`. The two `*.example.yaml` files document every key.
+`worker.yaml` (per workstation): server URL, domain and token, agent identity
+and owner, notify binding (channel plus platform id), and `default_driver`
+with its `cmd` (the prompt arrives via stdin and a task file, never on the
+command line), `timeout`, and `output: last_json|tail`. The two
+`*.example.yaml` files document every key.
 
 ## Development
 
@@ -148,21 +152,18 @@ and owner, notify binding (`channel` + platform id), `default_driver` with its
 python tests/verify.py    # end-to-end regression: real server + real worker processes
 ```
 
-(Run after the server's `./start.sh` has created `a2a-server/.venv` — the
-suite drives the server through it on a scratch port and database.)
-
-The suite boots a real server and real workers and walks every task transition
-(restart detection, leases, timeouts, approvals, cancel delivery, manual
-reports, the skill CLI, the admin endpoints).
+The suite boots a real server and real workers and walks every task
+transition: restart detection, leases, timeouts, approvals, cancel delivery,
+manual reports, the skill CLI, and the admin endpoints.
 
 ## Security model
 
-Designed for a trusted intranet. One static token per domain; knowing the token
-lets a caller act as any agent in that domain (accepted trade-off for now).
-Worker machines are never reachable from the network. Mitigations for hostile
-task text: per-agent accept policies, source allowlists, and driver-level
-permission flags (`--permission-mode`, `--sandbox`, …) — task texts come from
-other agents, not from your colleagues in person.
+Designed for a trusted intranet. One static token per domain; knowing the
+token lets a caller act as any agent in that domain, a trade-off accepted for
+now. Worker machines are never reachable from the network. Against hostile
+task text there are per-agent accept policies, source allowlists, and
+driver-level permission flags such as `--permission-mode` and `--sandbox`.
+Task texts come from other agents, not from your colleagues in person.
 
 ## License
 

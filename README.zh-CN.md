@@ -4,123 +4,81 @@
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 
-让分散在团队各工程师工作站上的 AI 编码智能体成为同事：互相派任务、无头执行，并通过 IM 把人保持在环内——任务到达、结果、失败、追问、审批，全部推送到属主。
+团队里每人工作站上的编码智能体，通过 a2a-cowork 互相派活、无头执行。人在 IM 上收通知：任务来了、跑完了、失败了、要审批，随手都能看到。
 
 > "A2A" 在这里只是 agent-to-agent 的俗称。本项目**不是** Google A2A 协议的实现，与其无关联。
 
+![architecture](docs/architecture.png)
+
 ![admin console](docs/admin-console.png)
 
-*只读 admin 控制台——全部 agent（在线状态、属主、能力描述）、全部任务、自动刷新且钉在最新一行的全量事件日志。*
+## 支持情况
 
-## ✅ 当前支持情况
-
-| 方面 | 已支持 | 未支持 |
-|---|---|---|
-| IM 通知 | feishu（飞书）、dingtalk（钉钉）、wecom（企业微信）、telegram、slack、discord（+内置 `log`） | MS Teams、WhatsApp（需公网回调 / 云 API） |
-| 智能体运行时 | 任意 headless CLI（`command` driver：Claude Code、Codex、Gemini CLI……纯配置接入）；人工执行任务（`manual` driver） | webhook/HTTP 型 agent 服务 |
-| 平台 | Linux 服务器 · Windows / Linux / macOS 工作站（无需管理员权限、只出站连接） | 高可用 / 多服务器 |
-| IM 交互性 | 文本通知 | 动作卡片/按钮（在 IM 里点「接受/拒绝/中止」） |
-
-设计上明确不做：自动重试与自愈（失败必须可见，由人决策）、按任务指定 driver、流式、单 worker 并行多任务（串行，一次一单）。
-
-## 🧭 为什么做 a2a-cowork——与邻居项目的差异
-
-你的团队早就在跑各种强力 agent：这台机器 Claude Code、那台 Codex、第三台 Gemini。缺的是无聊的那一层——一个大家都能加入的派单网络，以及让人不盯控制台也能保持在环内的机制。a2a-cowork 就是这一层，不多不少：
-
-| | a2a-cowork | IM 网关类（OpenClaw 系） | AgentTeams | CrewAI / LangGraph / AutoGen |
-|---|---|---|---|---|
-| 是什么 | 面向既有 CLI agent 的内网派单网络 | 人通过 IM 和自己的 agent 聊天 | K8s 上的 Manager-Worker 容器 + Matrix 房间 | 用代码编写多 agent 应用的框架 |
-| agent 如何加入 | 任意工作站——只出站、纯配置、零代码 | 单机单网关 | 集群内容器 | 进程内 |
-| IM 的角色 | 监督通道：到达/结果/失败/审批推给属主 | 控制面本身 | 自建 Matrix 房间 | — |
-| 人工审批闸门 | 按 agent 配置：auto / notify_run / manual | — | — | 需自行开发 |
-| 重量 | 一个 Python 服务器 + SQLite，零 SDK 依赖 | 本地网关 | K8s + Helm + MinIO + AI 网关 | 库 |
-
-设计立场：**失败保持可见，绝不静默自愈**——没有自动重试、没有重启循环；任何异常都以终态 + 通知 + 审计事件收尾，下一步由人决定。
-
-## 🏗 工作原理
-
-```mermaid
-flowchart TB
-    A["agent A<br/>(发起方)"] -->|"POST /tasks"| S
-    S["A2A Server · FastAPI + SQLite<br/>目录 · 队列 · 租约 · 事件日志<br/>通知网关 · admin 控制台"]
-    S -->|"长轮询：任务 + 租约<br/>control.cancel"| W["agent B 的 worker<br/>(工作站，只出站)"]
-    W -->|"结果上报"| S
-    S -->|"任务到达 / 完成 / 失败<br/>待你审批"| P["属主的 IM<br/>(飞书 / 钉钉 / 企微 /<br/>telegram / slack / discord)"]
-    S --> B["只读 /admin 控制台<br/>agents · 任务 · 全量事件日志"]
-```
-
-- **星形拓扑**：一台服务器，成员平权。Worker 只发出站长轮询连接——不开入站端口、不需要固定 IP、不需要管理员权限。
-- **poll 即心跳**：driver 执行期间 worker 持续 poll，长任务不会被误判离线，取消指令秒级送达。
-- **租约**：只有持有匹配租约且任务仍在执行态时结果才被接受；其余一律落为可见的 `late_result` 事件，绝不静默改写历史。
-- **rc=0 不等于成功**：空输出、错误标记、解析失败——全部上报为失败。agent 最大的谎言就是干净退出却什么都没做。
-- **人保持在环内**：任务到达（notify_run 档）、完成、失败、追问都推送到属主 IM；manual 档 agent 等待明确的接受/拒绝。
-
-## 🚀 快速开始
-
-所有机器需要 Python 3.9+。
-
-**1. 服务器**（任意内网 Linux 主机）：
-
-```bash
-git clone <this-repo> && cd a2a-cowork/a2a-server
-cp server.example.yaml server.yaml   # 配置域与 token；IM 凭据可选
-./start.sh                           # 自建 venv + 装依赖 + 启动
-```
-
-**2. Worker**（每位工程师的工作站——agent 所在的机器）：
-
-```bash
-cd a2a-worker
-cp worker.example.yaml worker.yaml   # agent id、属主、IM id、driver 命令
-./start.sh                           # Windows 用 start.cmd
-```
-
-worker 自动注册并开始轮询。全部状态在服务器上；工作站随停随起、可随意重装。
-
-**3. 派发任务**——把你的 agent 指向 `a2a-skill` 技能，或直接用 CLI（依赖 pyyaml，用 worker 的 venv 解释器）：
-
-```bash
-PY=a2a-worker/.venv/bin/python        # Windows 为 .venv\Scripts\python.exe
-$PY a2a-skill/api.py agents           # 团队都有谁
-$PY a2a-skill/api.py new --to zhangsan-claude --text "<自包含的任务文本>"
-$PY a2a-skill/api.py get --task <id> --wait 300    # 等到终态或追问
-$PY a2a-skill/api.py msg --task <id> --text "<回答>"   # 追问续发，同 task id
-```
-
-任务文本必须自包含：背景、目标、仓库/文档链接、验收标准——对端只凭这段文本跑一次。
-
-## 🔑 核心概念
-
-| 概念 | 含义 |
+| 方面 | 状态 |
 |---|---|
-| domain（域） | 一个团队：一份目录、一个任务队列、一个 IM 平台（服务端设定，注册时强制统一） |
-| 接受策略 | 按 agent 配置：`auto` · `notify_run`（默认：到达即通知属主、立即执行）· `manual`（等属主接受/拒绝） |
-| input-required（追问） | 执行中的 agent 可以问一个问题（`NEED_INPUT:` 标记）；发起方在同一 task id 上回答，任务带完整上下文重跑 |
-| 租约 / 迟到结果 | 结果绑定租约；过期上报成为 `late_result` 事件，由人裁决 |
-| 防假成功 | 退出码 0 但空输出/错误标记/解析失败，一律判失败 |
-| admin 控制台 | `GET /admin?token=…`——实时 agent 目录、任务列表、自动刷新的全量事件日志，点开任务看完整对话 |
+| IM 通知 | 飞书、钉钉、企业微信、telegram、slack、discord 已实现（另有内置 `log` 通道）；MS Teams、WhatsApp 暂不支持（需要公网回调或云 API） |
+| 智能体接入 | 任意 headless CLI（Claude Code、Codex、Gemini CLI 等，写一段 yaml 即接入）；无法无头调用的桌面或网页 agent 走 `manual` 档，由属主手动执行后回填 |
+| 平台 | Linux 服务器一台；Windows / Linux / macOS 工作站，全程不需要管理员权限 |
+| IM 交互 | 目前是文本通知；卡片按钮（在 IM 里直接接受/中止）在计划中 |
 
-点击任务行即打开完整记录——两个 agent 之间的全部对话与全部事件，凌晨两点排查问题时需要的正是它：
+自动重试、自动恢复这类能力刻意没做：失败必须可见，重不重试由人决定。一个 worker 同时只跑一个任务。
 
-![task detail](docs/admin-task-detail.png)
+## 安装
 
-## ⚙️ 配置
+用哪部分，装哪部分。
 
-`server.yaml`（服务器）：`domains: [{id, token, channel?}]`、IM 凭据（`feishu{app_id,app_secret}`、`dingtalk{app_key,app_secret,agent_id}`、`wecom{corp_id,corp_secret,agent_id}`、`telegram_bot_token`、`slack_bot_token`、`discord_bot_token`）、时序参数（离线判定、派发宽限、保留期、审批超时……）。所有凭据支持 `${ENV_VAR}` 展开。
-
-`worker.yaml`（每台工作站）：服务器地址 + 域 + token、agent 身份与属主、通知绑定（`channel` + 平台 id）、`default_driver` 及其 `cmd`（prompt 经 stdin 与任务文件投递，绝不经命令行参数）、`timeout`、`output: last_json|tail`。两个 `*.example.yaml` 对每个键都有说明。
-
-## 🧪 开发
+**服务器**（运维内网主机的人）：
 
 ```bash
-python tests/verify.py    # 端到端回归：真实 server + 真实 worker 进程
+mkdir a2a-server && cd a2a-server
+curl -fsSL https://github.com/Zedk42/a2a-cowork/archive/refs/heads/main.tar.gz \
+  | tar xz -C . --strip-components=2 a2a-cowork-main/a2a-server
+cp server.example.yaml server.yaml   # 编辑：域与 token，IM 凭据可选
+./start.sh                           # 后台启动；停止用 ./start.sh stop
 ```
 
-（需先跑过服务器的 `./start.sh` 以生成 `a2a-server/.venv`——回归套件用它驱动服务器，使用独立端口与临时数据库。）
+`start.sh` 会先停掉旧实例，pid 记在 `a2a.pid`，日志落在 `a2a-server.log`。
 
-## 🔒 安全模型
+**每位工程师**（让你的 agent 接入）：把 [a2a-skill](https://github.com/Zedk42/a2a-cowork/tree/main/a2a-skill) 下载到编码智能体的技能目录（Claude Code 放 `~/.claude/skills/a2a-team`）：
 
-面向可信内网设计。每域一个静态 token；知道 token 即可以该域任意 agent 身份行事（当前接受的折中）。工作站机器不可从网络触达。针对恶意任务文本的缓解：按 agent 的接受策略、来源白名单、driver 级权限旗标（`--permission-mode`、`--sandbox`……）——任务文本来自其他 agent，不是同事本人的当面委托。
+```bash
+mkdir -p ~/.claude/skills/a2a-team && cd ~/.claude/skills/a2a-team
+curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill/SKILL.md \
+     -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill/api.py
+```
+
+然后对 agent 说一句："用 a2a-team skill 加入团队"。skill 会向属主问几个问题（agent id、属主名、IM 账号、接单策略），自己把 worker 拉到 `~/a2a-worker` 并启动。状态全在服务器上，工作站随停随起。
+
+**开发**：整仓 clone 后跑 `python tests/verify.py`。
+
+## 怎么运转
+
+- 星形拓扑：一台服务器居中，成员平权，既能派活也能接活。Worker 只向外发起长轮询连接，工作站不开入站端口、不需要固定 IP。
+- poll 即心跳：driver 执行期间 worker 持续 poll，长任务不会被误判离线，取消指令几秒内送达。
+- 结果绑定租约：过期上报落为可见的 `late_result` 事件，不会悄悄改写历史。
+- 退出码 0 说明不了什么：空输出、带错误标记、解析失败，一律按失败上报。假成功在这一关被拦下。
+- 接单策略按 agent 配置：`auto` 直接跑；`notify_run`（默认）开跑同时通知属主；`manual` 等属主点头。来源白名单可挡掉陌生派单。
+- 执行中的 agent 可以追问（`NEED_INPUT:` 标记），发起方在同一 task id 上回答，任务带完整上下文重跑。
+
+## 验证状态
+
+| 状态 | 内容 |
+|---|---|
+| 已验证 | 状态机全部迁移、租约与迟到结果、重启检测、四类超时、审批（接受 / 拒绝 / 超时）、取消、追问续发、manual 回填、防假成功、单实例锁、skill CLI、admin 端点（`tests/verify.py`，真实 server + worker 进程端到端，macOS 实跑） |
+| 已实现未实测 | 六个 IM 适配器（已对照各平台官方文档核验接口，未接真实凭据联调）；Windows 工作站全流程（代码路径已审） |
+| 计划中 | IM 卡片按钮（在 IM 里接受/中止）、MS Teams 与 WhatsApp、多服务器 |
+
+欢迎贡献：Issue 和 PR 都收，`tests/verify.py` 全绿是合并前提。
+
+## 配置
+
+`server.yaml`：域列表（id、token、可选 channel）、IM 凭据（飞书/钉钉/企微的三元组或 telegram/slack/discord 的 bot token）、时序参数。所有凭据支持 `${ENV_VAR}` 展开。
+
+`worker.yaml`：服务器地址、域和 token、agent 身份与属主、通知绑定、`default_driver` 及其命令行（prompt 经 stdin 和任务文件投递，不进命令行参数）。两个 `*.example.yaml` 对每个键都有说明。
+
+## 安全模型
+
+面向可信内网。每域一个静态 token，拿到 token 即可以该域任意 agent 身份行事，这是当前接受的折中。工作站不可从网络触达。对抗恶意任务文本的手段：接单策略、来源白名单、driver 级权限旗标（如 `--permission-mode`、`--sandbox`）。任务文本来自其他 agent，不是同事本人的当面委托。
 
 ## License
 

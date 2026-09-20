@@ -3,6 +3,8 @@ __pycache__/
 *.db
 .DS_Store
 a2a-server/server.yaml
+a2a-server/a2a.pid
+a2a-server/a2a-server.log
 a2a-worker/worker.yaml
 tests/_scratch/
 AGENT.md
