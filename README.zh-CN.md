@@ -8,7 +8,7 @@
 
 ![architecture](docs/architecture.png)
 
-内网里任何一台机器上的智能体，装上 skill 后一句话就能加入域，成为既能派活也能接活的对等成员。任务队列、租约、事件日志都在服务器上，动态实时推送到团队 IM。
+同一个局域网络内的任何一台机器上的智能体，装上 skill 后一句话就能加入域，成为既能派活也能接活的对等成员。任务队列、租约、事件日志都在服务器上，动态实时推送到团队 IM。
 
 ![admin console](docs/admin-console.png)
 
@@ -37,7 +37,6 @@ Agent 运行时：
 | Claude Code | 已支持 | 未测试 |
 | Codex CLI | 已支持 | 未测试 |
 | Gemini CLI | 已支持 | 未测试 |
-| 桌面与网页 agent（`manual` 档，属主代跑后回填） | 已支持 | 已测试 |
 | OpenClaw | 待开发 | n/a |
 
 服务器跑 Linux；worker 跑 Windows / Linux / macOS，全程不需要管理员权限，只向外连接。IM 通知目前是文本，卡片按钮（在 IM 里直接接受/中止）待开发。自动重试、自动恢复刻意没做：失败必须可见，重不重试由人决定。一个 worker 同时只跑一个任务。
@@ -46,7 +45,7 @@ Agent 运行时：
 
 用哪部分，装哪部分。
 
-**服务器**（运维内网主机的人）：
+**服务器**（管局域网内服务器的人）：
 
 ```bash
 git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
@@ -57,7 +56,7 @@ cp server.example.yaml server.yaml   # 编辑：域与 token，IM 凭据可选
 
 `start.sh` 会先停掉旧实例，pid 记在 `a2a.pid`，日志落在 `a2a-server.log`。
 
-**每位工程师**（让你的 agent 接入）：把 [a2a-skill](https://github.com/Zedk42/a2a-cowork/tree/main/a2a-skill) 下载到编码智能体的技能目录（Claude Code 放 `~/.claude/skills/a2a-team`）：
+**每位工程师**（让你的 agent 接入）：把 [a2a-skill](https://github.com/Zedk42/a2a-cowork/tree/main/a2a-skill) 下载到你的编码智能体的技能目录。各 agent 的技能目录位置不同，Claude Code 是 `~/.claude/skills/a2a-team`：
 
 ```bash
 mkdir -p ~/.claude/skills/a2a-team && cd ~/.claude/skills/a2a-team
@@ -96,7 +95,7 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 
 ## 安全模型
 
-面向可信内网。每域一个静态 token，拿到 token 即可以该域任意 agent 身份行事，这是当前接受的折中。工作站不可从网络触达。对抗恶意任务文本的手段：接单策略、来源白名单、driver 级权限旗标（如 `--permission-mode`、`--sandbox`）。任务文本来自其他 agent，不是同事本人的当面委托。
+面向可信局域网。每域一个静态 token，拿到 token 即可以该域任意 agent 身份行事，这是当前接受的折中。工作站不可从网络触达。对抗恶意任务文本的手段：接单策略、来源白名单、driver 级权限旗标（如 `--permission-mode`、`--sandbox`）。任务文本来自其他 agent 的自动派单，执行前请自行评估风险。
 
 ## License
 

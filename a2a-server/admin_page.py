@@ -1,4 +1,4 @@
-"""Read-only admin console. One static HTML page (this file) + three JSON
+"""Admin console. One static HTML page (this file) + three JSON
 endpoints in server.py: /admin/data (snapshot), /admin/task/{id} (full convo and
 events). Vanilla JS, no build step, no external assets (works fully offline on
 an intranet); everything user-supplied is rendered via textContent, so no HTML
@@ -65,7 +65,7 @@ tr.tk:hover td{background:rgba(45,49,66,.03)}
 <div class="wrap">
 <header>
   <div>
-    <p class="eyebrow">A2A Co-Work &middot; read-only console</p>
+    <p class="eyebrow">A2A Co-Work</p>
     <h1>Team Console</h1>
   </div>
   <div class="live"><span class="pulse"></span><span id="log-note">loading&hellip;</span></div>
@@ -84,7 +84,7 @@ tr.tk:hover td{background:rgba(45,49,66,.03)}
 <div id="detail"></div>
 
 <section>
-  <div class="sec-head"><h2>Event log</h2><span class="note">newest at bottom &middot; auto-refresh 3s</span></div>
+  <div class="sec-head"><h2>Event log</h2><span class="note">newest at bottom</span></div>
   <div class="card"><div id="log"></div></div>
 </section>
 </div>

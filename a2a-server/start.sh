@@ -1,34 +1,29 @@
 #!/usr/bin/env bash
-# One-key start for Linux. Runs the server in the background, records its pid
-# to a2a.pid, and stops a previous instance first. Usage: ./start.sh [stop]
+# One-key start for Linux: stops any previous instance, then runs the server
+# in the background with the new pid recorded in a2a.pid. Usage: ./start.sh [stop]
 set -euo pipefail
 cd "$(dirname "$0")"
 PID_FILE=a2a.pid
 LOG=a2a-server.log
 
-if [ "${1:-start}" = stop ]; then
-  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    kill "$(cat "$PID_FILE")" 2>/dev/null || true
-    for _ in $(seq 1 20); do kill -0 "$(cat "$PID_FILE")" 2>/dev/null || break; sleep 0.5; done
-    if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-      kill -9 "$(cat "$PID_FILE")" 2>/dev/null || true
-      sleep 1
-      kill -0 "$(cat "$PID_FILE")" 2>/dev/null && { echo "cannot stop pid $(cat "$PID_FILE"); kill it manually"; exit 1; }
-    fi
-    echo "stopped (pid $(cat "$PID_FILE"))"
+stop_old() {
+  [ -f "$PID_FILE" ] || return 0
+  local pid; pid=$(cat "$PID_FILE")
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    echo "stopped old server (pid $pid)"
   fi
   rm -f "$PID_FILE"
+}
+
+if [ "${1:-start}" = stop ]; then
+  stop_old
   exit 0
 fi
 
-# a fresh start replaces any old instance
-if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-  kill "$(cat "$PID_FILE")" 2>/dev/null || true
-  sleep 1
-  echo "replaced old server (pid $(cat "$PID_FILE"))"
-fi
-rm -f "$PID_FILE"
-
+stop_old   # a fresh start replaces the old instance
 [ -f server.yaml ] || cp server.example.yaml server.yaml
 if [ ! -d .venv ]; then
   python3 -m venv .venv

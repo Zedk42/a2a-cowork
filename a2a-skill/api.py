@@ -27,7 +27,7 @@ def load():
     p = next((c for c in cands if c.is_file()), None)
     if not p:
         sys.exit("no worker.yaml found (looked in $A2A_WORKER_CONFIG, here, ../a2a-worker, "
-                 "~/a2a-worker, and ~/a2a-cowork/a2a-worker); run onboarding per SKILL.md first")
+                 "and ~/a2a-cowork/a2a-worker); run onboarding per SKILL.md first")
     def expand(v):
         if isinstance(v, str):
             return os.path.expandvars(v)

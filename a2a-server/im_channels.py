@@ -258,8 +258,8 @@ def build(cfg):
         if all(c.get(f) for f in fields):
             try:
                 out[key] = cls(*(c[f] for f in fields))
-            except (TypeError, ValueError):
-                pass  # e.g. non-numeric agent_id: disable the channel, don't crash boot
+            except (TypeError, ValueError) as e:
+                raise SystemExit(f"config error: {key}: {e}") from None
     if cfg.get("telegram_bot_token"):
         out["telegram"] = TelegramChannel(cfg["telegram_bot_token"])
     if cfg.get("slack_bot_token"):

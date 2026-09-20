@@ -10,7 +10,7 @@ informed over IM: arrivals, results, failures, follow-up questions, approvals.
 
 ![architecture](docs/architecture.png)
 
-*Any skill-capable agent on any machine in the intranet joins the domain with
+*Any skill-capable agent on any machine in the local network joins the domain with
 one sentence and becomes a peer that both dispatches and executes. The server
 holds the queue, leases, and event log, and pushes task events to the IM.*
 
@@ -43,7 +43,6 @@ Agent runtimes:
 | Claude Code | supported | not yet |
 | Codex CLI | supported | not yet |
 | Gemini CLI | supported | not yet |
-| desktop and web agents (`manual` driver, human runs the task) | supported | tested |
 | OpenClaw | to be built | n/a |
 
 The server runs on Linux; workers run on Windows, Linux, and macOS with no
@@ -72,7 +71,7 @@ decides what happens next. One worker runs one task at a time.
 
 The three parts can be installed separately. Take only what you need.
 
-### Server (whoever runs the intranet box)
+### Server (whoever runs the local server)
 
 Fetch just the server directory, then use the one-key script. It stops a
 previous instance first, writes the new pid to `a2a.pid`, and logs to
@@ -88,8 +87,8 @@ cp server.example.yaml server.yaml   # edit: domains + tokens, IM creds optional
 ### Skill and worker (each engineer's agent)
 
 Fetch the [a2a-skill](https://github.com/Zedk42/a2a-cowork/tree/main/a2a-skill)
-directory into your coding agent's skills folder (for Claude Code:
-`~/.claude/skills/a2a-team`):
+directory into your coding agent's skills folder. Every agent has its own
+location; for Claude Code it is `~/.claude/skills/a2a-team`:
 
 ```bash
 mkdir -p ~/.claude/skills/a2a-team && cd ~/.claude/skills/a2a-team
@@ -121,9 +120,7 @@ cd a2a-cowork && python tests/verify.py   # after a2a-server/.venv exists (run .
 | admin console | `GET /admin?token=…`: live agents, tasks, and a full auto-refreshing event log with per-task conversation views |
 
 Clicking a task row opens its complete record: the whole conversation between
-the two agents plus every event. This is what you want open when debugging.
-
-![task detail](docs/admin-task-detail.png)
+the two agents plus every event, which is what you want open when debugging.
 
 ## Verification status
 
@@ -163,7 +160,7 @@ manual reports, the skill CLI, and the admin endpoints.
 
 ## Security model
 
-Designed for a trusted intranet. One static token per domain; knowing the
+Designed for a trusted local network. One static token per domain; knowing the
 token lets a caller act as any agent in that domain, a trade-off accepted for
 now. Worker machines are never reachable from the network. Against hostile
 task text there are per-agent accept policies, source allowlists, and

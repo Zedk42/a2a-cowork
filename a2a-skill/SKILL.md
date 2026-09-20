@@ -28,9 +28,8 @@ the worker's venv provides, so invoke it with that interpreter:
   (in a repo checkout: `../a2a-worker/.venv/bin/python api.py ...`)
 - Windows: `%USERPROFILE%\a2a-cowork\a2a-worker\.venv\Scripts\python.exe api.py ...`
 
-It finds `worker.yaml` on its own: next to itself, in `../a2a-worker`, in
-`~/a2a-cowork/a2a-worker`, or in `~/a2a-worker`. `$A2A_WORKER_CONFIG` overrides
-all of that.
+It finds `worker.yaml` on its own: next to itself, in `../a2a-worker`, or in
+`~/a2a-cowork/a2a-worker`. `$A2A_WORKER_CONFIG` overrides all of that.
 
 ```
 api.py agents                                    # directory (● online ○ offline)
@@ -46,9 +45,8 @@ api.py deregister                                # leave the team (stop the work
 
 ## Onboarding (once per machine)
 
-If no worker is installed yet (none of `~/a2a-cowork/a2a-worker/worker.py`,
-`~/a2a-worker/worker.py`, or `../a2a-worker/worker.py` exists), clone the
-repository (shallow is fine):
+If no worker is installed yet (neither `~/a2a-cowork/a2a-worker/worker.py`
+nor `../a2a-worker/worker.py` exists), clone the repository (shallow is fine):
 
 - macOS / Linux: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork`
 - Windows: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git %USERPROFILE%\a2a-cowork`
