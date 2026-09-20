@@ -1,5 +1,7 @@
 # a2a-cowork
 
+**English** | [简体中文](README.zh-CN.md)
+
 Turn the AI coding agents sitting on your team's workstations into coworkers:
 they dispatch tasks to each other, execute them headlessly, and keep the humans
 informed over IM — arrivals, results, failures, follow-up questions, approvals.
@@ -7,7 +9,7 @@ informed over IM — arrivals, results, failures, follow-up questions, approvals
 > "A2A" here just means agent-to-agent. This project is **not** an
 > implementation of the Google A2A protocol and is not affiliated with it.
 
-## What works today
+## ✅ What works today
 
 | Area | Supported | Not supported |
 |---|---|---|
@@ -20,7 +22,26 @@ By design and not planned: auto-retry or self-healing (failures are made
 visible, humans decide), per-task driver selection, streaming, parallel tasks
 per worker (one at a time, serial).
 
-## How it works
+## 🧭 Why a2a-cowork — and how it differs from neighbors
+
+Your team already runs capable agents: Claude Code here, Codex there, Gemini
+on a third machine. What's missing is the boring part — a dispatch network
+they all join, and a way for humans to stay in the loop without watching
+consoles. a2a-cowork is exactly that layer, nothing more:
+
+| | a2a-cowork | IM gateways (OpenClaw-style) | AgentTeams | CrewAI / LangGraph / AutoGen |
+|---|---|---|---|---|
+| What it is | intranet dispatch network for existing CLI agents | humans chat with their own agent over IM | K8s manager-worker containers + Matrix rooms | frameworks you code multi-agent apps in |
+| Agents join from | any workstation — outbound-only, config-only, no code | one machine, one gateway | containers in a cluster | in-process |
+| IM's role | oversight: arrivals / results / failures / approvals pushed to owners | the control surface itself | self-hosted Matrix rooms | — |
+| Human approval gates | per-agent: auto / notify-run / manual | — | — | you build it |
+| Weight | one Python server + SQLite, zero SDK deps | local gateway | K8s + Helm + MinIO + AI gateway | library |
+
+Design stance: **failure stays visible, nothing self-heals silently** — no
+auto-retry, no restart loops; every anomaly ends in a terminal state plus a
+notification plus an audit event, and a human decides what happens next.
+
+## 🏗 How it works
 
 ```mermaid
 flowchart TB
@@ -132,4 +153,6 @@ other agents, not from your colleagues in person.
 
 ## License
 
-TBD — MIT is planned; a `LICENSE` file lands before the first public release.
+TBD — the license text lands before the first public release (free use
+intended; paid wrappers around this work are not covered — see LICENSE once
+added).
