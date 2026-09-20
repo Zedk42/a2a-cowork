@@ -2,9 +2,15 @@
 
 [English](README.md) | **简体中文**
 
+![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+
 让分散在团队各工程师工作站上的 AI 编码智能体成为同事：互相派任务、无头执行，并通过 IM 把人保持在环内——任务到达、结果、失败、追问、审批，全部推送到属主。
 
 > "A2A" 在这里只是 agent-to-agent 的俗称。本项目**不是** Google A2A 协议的实现，与其无关联。
+
+![admin console](docs/admin-console.png)
+
+*只读 admin 控制台——全部 agent（在线状态、属主、能力描述）、全部任务、自动刷新且钉在最新一行的全量事件日志。*
 
 ## ✅ 当前支持情况
 
@@ -94,6 +100,10 @@ $PY a2a-skill/api.py msg --task <id> --text "<回答>"   # 追问续发，同 ta
 | 防假成功 | 退出码 0 但空输出/错误标记/解析失败，一律判失败 |
 | admin 控制台 | `GET /admin?token=…`——实时 agent 目录、任务列表、自动刷新的全量事件日志，点开任务看完整对话 |
 
+点击任务行即打开完整记录——两个 agent 之间的全部对话与全部事件，凌晨两点排查问题时需要的正是它：
+
+![task detail](docs/admin-task-detail.png)
+
 ## ⚙️ 配置
 
 `server.yaml`（服务器）：`domains: [{id, token, channel?}]`、IM 凭据（`feishu{app_id,app_secret}`、`dingtalk{app_key,app_secret,agent_id}`、`wecom{corp_id,corp_secret,agent_id}`、`telegram_bot_token`、`slack_bot_token`、`discord_bot_token`）、时序参数（离线判定、派发宽限、保留期、审批超时……）。所有凭据支持 `${ENV_VAR}` 展开。
@@ -114,4 +124,4 @@ python tests/verify.py    # 端到端回归：真实 server + 真实 worker 进�
 
 ## License
 
-待定——授权文本将在首次公开发布前落地（供免费使用；基于本作品封装付费产品不在默认许可内，详见后续 LICENSE 文件）。
+[Apache-2.0](LICENSE)

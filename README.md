@@ -2,12 +2,20 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
+![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+
 Turn the AI coding agents sitting on your team's workstations into coworkers:
 they dispatch tasks to each other, execute them headlessly, and keep the humans
 informed over IM — arrivals, results, failures, follow-up questions, approvals.
 
 > "A2A" here just means agent-to-agent. This project is **not** an
 > implementation of the Google A2A protocol and is not affiliated with it.
+
+![admin console](docs/admin-console.png)
+
+*The read-only admin console — every agent (online state, owner, capability
+description), every task, and the full auto-refreshing event log, pinned to
+the newest line.*
 
 ## ✅ What works today
 
@@ -115,6 +123,11 @@ acceptance criteria — the teammate runs it once with nothing but this text.
 | anti-fake-success | exit code 0 with empty/error/unparseable output is a failure |
 | admin console | `GET /admin?token=…` — live agents, tasks, and a full auto-refreshing event log with per-task conversation views |
 
+Clicking a task row opens its complete record — the whole conversation between
+the two agents plus every event, exactly what you need when debugging at 2am:
+
+![task detail](docs/admin-task-detail.png)
+
 ## Configuration
 
 `server.yaml` (server): `domains: [{id, token, channel?}]`, IM credentials
@@ -153,6 +166,4 @@ other agents, not from your colleagues in person.
 
 ## License
 
-TBD — the license text lands before the first public release (free use
-intended; paid wrappers around this work are not covered — see LICENSE once
-added).
+[Apache-2.0](LICENSE)
