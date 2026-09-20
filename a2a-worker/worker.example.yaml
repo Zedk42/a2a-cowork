@@ -1,0 +1,44 @@
+# A2A worker config. Copy to worker.yaml and edit.
+# Values support ${ENV_VAR} expansion. Ask the owner for agent.owner and the
+# notify section — never guess them from the system (whoami etc.).
+server_url: http://127.0.0.1:8100
+domain: team-a
+domain_token: ${A2A_TOKEN_A}
+
+agent:
+  id: arno-claude            # unique in domain; {owner}-{tool} is a good pattern
+  owner: arno                # told by the owner; multiple agents may share one owner
+  description: "Claude Code on arno's workstation"
+  accept_policy: notify_run  # auto | notify_run | manual
+  accept_from: all           # all | [agent-id, ...]
+notify:                      # asked at onboarding: which IM platform + your ID there
+  channel: log               # log for now; feishu/dingtalk/slack adapters come later
+  id_type: text
+  id: arno
+
+default_driver: claude-code
+need_input_marker: '^NEED_INPUT:'
+workspace_dir: ~/.a2a-worker/tasks
+# local_port: 7860           # optional override; default is derived per agent id (no collisions)
+busy_poll_interval: 5
+drivers:
+  claude-code:
+    kind: command
+    # the full task text is fed via stdin AND written to {task_file};
+    # keep argv short ASCII — no prompt content on the command line
+    cmd: 'claude -p --output-format json --permission-mode acceptEdits'
+    timeout: 3600
+    output: last_json
+  codex:
+    kind: command
+    cmd: 'codex exec --json -'
+    timeout: 3600
+    output: tail
+  any-cli:                   # template for other -p style CLIs (gemini/qwen/iflow/...)
+    kind: command
+    cmd: 'exit 1'            # fails loudly until you put the real CLI here (never fake-succeed)
+    timeout: 600
+    output: tail
+  human:                     # manual driver: owner runs it, then `python worker.py report ...`
+    kind: manual
+    manual_timeout_hours: 24

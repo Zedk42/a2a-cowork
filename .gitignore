@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+*.db
+a2a-server/server.yaml
+a2a-worker/worker.yaml
+tests/_scratch/
+AGENT.md

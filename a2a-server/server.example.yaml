@@ -1,0 +1,25 @@
+# A2A Server config. All durations are seconds. Copy to server.yaml and edit.
+# Tokens support ${ENV_VAR} expansion.
+host: 0.0.0.0
+port: 8100
+language: zh            # zh | en (add a dict in notify.py MESSAGES for more)
+public_base: http://127.0.0.1:8100   # used in notification texts
+admin_token: change-me  # read-only admin page access (?token=)
+db_path: a2a.db
+
+domains:
+  - id: team-a
+    token: ${A2A_TOKEN_A}
+  - id: team-b
+    token: ${A2A_TOKEN_B}
+
+default_channel: log    # channel registry lives in notify.py; feishu/dingtalk/slack adapters plug in there
+online_timeout: 90
+poll_wait: 30
+sweep_interval: 5
+dispatch_grace: 60
+agent_retention: 259200     # 3d
+task_retention: 2592000     # 30d
+approval_timeout: 1800      # 30m
+input_required_timeout: 86400  # 24h
+default_task_timeout: 3600
