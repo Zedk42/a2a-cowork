@@ -1,6 +1,7 @@
 __pycache__/
 .venv/
 *.db
+.DS_Store
 a2a-server/server.yaml
 a2a-worker/worker.yaml
 tests/_scratch/

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Zero-dependency CLI for A2A Co-Work (used by the a2a-team skill and humans).
+"""CLI for A2A Co-Work (used by the a2a-team skill and humans); only
+dependency is pyyaml.
 
 Reads connection info from worker.yaml next to this file (or A2A_WORKER_CONFIG).
 Commands: agents | new | get | list | cancel | msg | action | deregister
@@ -40,11 +41,11 @@ def load():
     return cfg
 
 
-def call(cfg, method, path, body=None, agent=None):
+def call(cfg, method, path, body=None):
     req = urllib.request.Request(cfg["server_url"] + path, method=method,
                                  data=json.dumps(body).encode() if body is not None else None)
     req.add_header("authorization", f"Bearer {cfg['domain_token']}")
-    if agent := (agent or cfg.get("agent", {}).get("id")):
+    if agent := cfg.get("agent", {}).get("id"):
         req.add_header("x-agent-id", agent)
     with urllib.request.urlopen(req, timeout=60) as r:
         data = r.read()
@@ -56,7 +57,6 @@ TERMINAL = ("completed", "failed", "canceled")
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", help="path to worker.yaml (default: sibling of this file)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("agents")
     p = sub.add_parser("new"); p.add_argument("--to", required=True); p.add_argument("--text", required=True); p.add_argument("--timeout", type=int)
@@ -67,8 +67,6 @@ def main():
     p = sub.add_parser("action"); p.add_argument("--task", required=True); p.add_argument("--action", required=True, choices=["approve", "reject", "abort"])
     p = sub.add_parser("deregister", help="leave the team (stop your worker first)")
     a = ap.parse_args()
-    if a.config:
-        os.environ["A2A_WORKER_CONFIG"] = a.config
     cfg = load()
     d = cfg["domain"]
     try:

@@ -55,7 +55,6 @@ class _TokenClient:
 class TelegramChannel:
     """Bot-token DMs. id must be the numeric chat id — Telegram only lets a bot
     write into chats that messaged it first, so the owner opens the bot and /starts."""
-    name = "telegram"
 
     def __init__(self, token):
         self.token = token
@@ -76,7 +75,6 @@ class TelegramChannel:
 class SlackChannel:
     """Bot-token DMs. Needs chat:write + im:write, plus users:read.email when
     owners declare their id as an email."""
-    name = "slack"
 
     def __init__(self, token):
         self.token = token
@@ -104,7 +102,6 @@ class SlackChannel:
 class FeishuChannel:
     """企业自建应用 DMs (im:message + contact users/batch_get_id scopes).
     Targets are prefixed with the receive_id_type so send_text knows how to address them."""
-    name = "feishu"
     base = "https://open.feishu.cn/open-apis"
 
     def __init__(self, app_id, app_secret):
@@ -151,7 +148,6 @@ class DingTalkChannel:
     """企业内部应用工作通知 (appKey/appSecret/agentId). Lookup is by mobile — the
     number must exist in the org directory (a >20% lookup error rate blocks the
     API for a day, so owners must type it correctly)."""
-    name = "dingtalk"
     base = "https://oapi.dingtalk.com"
 
     def __init__(self, app_key, app_secret, agent_id):
@@ -191,7 +187,6 @@ class WeComChannel:
     """企业微信自建应用消息 (corpId/corpSecret/agentId). Text is capped at 2048
     bytes by the platform; longer texts are byte-clipped. Recipients must be in
     the app's visible range and the server's egress IP in its trusted-IP list."""
-    name = "wecom"
     base = "https://qyapi.weixin.qq.com/cgi-bin"
 
     def __init__(self, corp_id, corp_secret, agent_id):
@@ -230,7 +225,6 @@ class DiscordChannel:
     """Bot-token DMs. The owner's id is their snowflake user id (Discord: settings
     -> advanced -> developer mode -> copy user id). The DM channel is opened once
     per recipient and cached; a rate-limit (429) surfaces as notify_failed."""
-    name = "discord"
     base = "https://discord.com/api/v10"
 
     def __init__(self, token):

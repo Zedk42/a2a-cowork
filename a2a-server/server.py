@@ -106,8 +106,7 @@ async def any_err(request, exc):  # same rollback duty for uncaught errors (500s
     return JSONResponse({"error": {"code": "internal"}}, status_code=500)
 
 
-def now():
-    return time.time()
+now = time.time
 
 
 def iso(ts):
@@ -475,8 +474,9 @@ async def followup(d, tid, req: Request):
 
 @app.post("/domains/{d}/tasks/{tid}/action")
 async def owner_action(d, tid, req: Request):
-    """Owner entry point (approve/reject/abort). IM card callbacks forward here too;
-    until IM adapters exist, the owner calls this from any of their own agents."""
+    """Owner entry point (approve/reject/abort). IM card callbacks will forward
+    here too; until interactive cards land, the owner calls this from any of
+    their own agents."""
     domain_of(req, d)
     body = await json_body(req)  # parse BEFORE reading state: no stale snapshot after an await
     task = require_task(d, tid)

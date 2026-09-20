@@ -210,7 +210,7 @@ class Runner:
             try:
                 res = drivers.run_command(self.driver_cfg, self.task,
                                           os.path.expanduser(self.cfg.get("workspace_dir", "~/.a2a-worker/tasks")),
-                                          self.driver_cfg.get("need_input_marker", self.cfg.get("need_input_marker", r"^NEED_INPUT:")),
+                                          self.cfg.get("need_input_marker", r"^NEED_INPUT:"),
                                           self.cancel_event, self.expected)
             except Exception as e:
                 res = {"status": "failed", "fail_reason": "driver_error", "output": repr(e)}

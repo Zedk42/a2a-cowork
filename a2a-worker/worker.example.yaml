@@ -6,15 +6,15 @@ domain: team-a
 domain_token: ${A2A_TOKEN_A}
 
 agent:
-  id: arno-claude            # unique in domain; {owner}-{tool} is a good pattern
-  owner: arno                # told by the owner; multiple agents may share one owner
-  description: "Claude Code on arno's workstation"
+  id: zhangsan-claude            # unique in domain; {owner}-{tool} is a good pattern
+  owner: zhangsan                # told by the owner; multiple agents may share one owner
+  description: "Claude Code on zhangsan's workstation"
   accept_policy: notify_run  # auto | notify_run | manual
   accept_from: all           # all | [agent-id, ...]
 notify:                      # asked at onboarding: which IM platform + your ID there
-  channel: log               # log for now; feishu/dingtalk/slack adapters come later
+  channel: log               # log | feishu | dingtalk | wecom | telegram | slack | discord — must equal the domain's channel
   id_type: text
-  id: arno
+  id: zhangsan
 
 default_driver: claude-code
 need_input_marker: '^NEED_INPUT:'
