@@ -34,7 +34,7 @@ Agent 运行时：
 | 运行时 | 支持情况 | 测试情况 |
 |---|---|---|
 | 任意 headless CLI（`command` driver） | 已支持 | 已测试 |
-| Claude Code | 已支持 | 未测试 |
+| Claude Code | 已支持 | 已测试 |
 | Codex CLI | 已支持 | 未测试 |
 | Gemini CLI | 已支持 | 未测试 |
 | OpenClaw | 待开发 | n/a |
@@ -82,7 +82,7 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 | 状态 | 内容 |
 |---|---|
 | 已验证 | 状态机全部迁移、租约与迟到结果、重启检测、四类任务超时、审批（接受 / 拒绝 / 超时）、取消、追问续发、manual 回填、防假成功、单实例锁、skill CLI、admin 端点（`tests/verify.py`，真实 server + worker 进程端到端，macOS 实跑） |
-| 已实现未实测 | IM 适配器未接真实凭据联调（接口已对照各平台官方文档核验）；Windows 工作站全流程；Claude Code、Codex 等真实 CLI 的端到端 |
+| 已实现未实测 | IM 适配器未接真实凭据联调（接口已对照各平台官方文档核验）；Windows 工作站全流程；Codex、Gemini 等其余真实 CLI 的端到端（Claude Code 已实测） |
 | 计划中 | IM 卡片按钮（在 IM 里接受/中止）、多服务器 |
 
 欢迎贡献：Issue 和 PR 都收，`tests/verify.py` 全绿是合并前提。

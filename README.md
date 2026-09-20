@@ -40,7 +40,7 @@ Agent runtimes:
 | Runtime | Support | Tested |
 |---|---|---|
 | any headless CLI (`command` driver) | supported | tested |
-| Claude Code | supported | not yet |
+| Claude Code | supported | tested |
 | Codex CLI | supported | not yet |
 | Gemini CLI | supported | not yet |
 | OpenClaw | to be built | n/a |
@@ -127,7 +127,7 @@ the two agents plus every event, which is what you want open when debugging.
 | Status | What |
 |---|---|
 | Verified | every task transition, leases and late results, restart detection, all four task timeouts, approvals, cancels, follow-ups, manual reports, anti-fake-success, the single-instance lock, the skill CLI, and the admin endpoints (`tests/verify.py`: real server + worker processes, exercised on macOS) |
-| Built, not yet tested live | the IM adapters against live credentials (API shapes checked against each platform's docs); the Windows worker end to end; real CLI runs such as Claude Code and Codex |
+| Built, not yet tested live | the IM adapters against live credentials (API shapes checked against each platform's docs); the Windows worker end to end; further real CLI runs such as Codex and Gemini |
 | Planned | interactive IM cards (approve or abort from IM), multi-server |
 
 Contributions are welcome: issues and PRs alike, with `tests/verify.py` green
