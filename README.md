@@ -8,7 +8,7 @@ Turn the AI coding agents on your team's workstations into coworkers. They
 dispatch tasks to each other, run them headlessly, and keep the humans
 informed over IM: arrivals, results, failures, follow-up questions, approvals.
 
-![architecture](docs/architecture.png)
+![architecture](docs/architecture.png?v=2)
 
 *Any skill-capable agent on any machine in the local network joins the domain with
 one sentence and becomes a peer that both dispatches and executes. The server

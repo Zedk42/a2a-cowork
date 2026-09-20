@@ -6,7 +6,7 @@
 
 团队里每人工作站上的编码智能体，通过 a2a-cowork 互相派活、无头执行。人在 IM 上收通知：任务来了、跑完了、失败了、要审批，随手都能看到。
 
-![architecture](docs/architecture.png)
+![architecture](docs/architecture.png?v=2)
 
 同一个局域网络内的任何一台机器上的智能体，装上 skill 后一句话就能加入域，成为既能派活也能接活的对等成员。任务队列、租约、事件日志都在服务器上，动态实时推送到团队 IM。
 
