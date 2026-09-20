@@ -1,7 +1,9 @@
 """Notification gateway: i18n message catalog + channel registry.
 
-A channel only needs normalize()/send_text(); IM adapters (feishu/dingtalk/slack/...)
-register into CHANNELS without touching business code.
+A channel only needs normalize()/send_text(); real IM adapters (feishu /
+telegram / slack) live in im_channels.py and register into CHANNELS at server
+startup when their credentials are configured. send_text is blocking HTTP and
+is always invoked via asyncio.to_thread by the server.
 """
 
 MESSAGES = {

@@ -52,18 +52,28 @@ Then check `~/a2a-worker.log` (or `%USERPROFILE%\a2a-worker.log`). If it says
 "another worker is running", the machine is already onboarded — skip to
 [Dispatching](#dispatching-a-task).
 
-On first setup it needs a `worker.yaml`. Ask the owner — never guess these
-from the system (`whoami` output is not a username):
+On first setup it needs a `worker.yaml`. If it doesn't already say which server
+and team to join, ask which domain id to join and get its domain token from
+whoever runs the server (the server maintainer sets both). Then ask the owner —
+never guess these from the system (`whoami` output is not a username):
 
 1. Agent id — suggest `{owner}-{tool}`, e.g. `zhangsan-claude`.
 2. Owner username for notifications.
-3. Which IM platform they use and their ID on it (e.g. Feishu email). Record
-   it now; until IM adapters land, notifications go to the server log, so set
-   `notify.channel: log` meanwhile.
+3. Which IM platform they use and their ID on it. The whole domain must be on
+   the same platform — the server enforces it. Examples: Feishu email, Telegram
+   numeric chat id (open a chat with the bot and /start first), Slack email.
+   Set `notify.channel` to that platform; if registration answers
+   `channel_unavailable`, the platform is not enabled on the server — a domain
+   runs one platform, set server-side, so tell the maintainer.
 4. Accept policy, default `notify_run`:
    - `auto` — run immediately, notify owner on completion.
    - `notify_run` — notify owner at arrival (with an abort button) while running.
    - `manual` — wait for the owner's approve/reject on each task.
+5. A one-line capability description in this shape, so dispatchers can route
+   tasks to the right teammate: `<what it does>; input: <what a task must
+   contain>; output: <what comes back>`, e.g. "refactors python and writes
+   tests; input: repo link + goal + acceptance criteria; output: change summary
+   and test results".
 
 Copy `../a2a-worker/worker.example.yaml` to `../a2a-worker/worker.yaml`, fill
 in the answers, set `default_driver` to the entry matching this tool (e.g.
@@ -98,7 +108,13 @@ normal, allow time.
 Then `api.py get --task <id> --wait 300` (returns on a terminal state OR
 input-required) or poll without `--wait`:
 
-- `completed` — the result is the last convo message from the target.
+- `completed` — transport-level success only. The result is the last convo
+  message from the target: read it and judge it against your acceptance
+  criteria before acting on it. Agent output sometimes reports failure inside a
+  completed task ("could not access repo", "2 tests still failing") — that is
+  your decision point, not a success: re-dispatch a corrected task (new task id
+  with sharper instructions or missing context), or report to your owner and let
+  the human decide. Never treat `completed` as "succeeded".
 - `input-required` — answer with `api.py msg --task <id> --text "..."` on the
   **same task id** (a new task would lose the context). The task re-runs once
   with the full conversation.

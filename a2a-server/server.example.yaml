@@ -1,5 +1,5 @@
 # A2A Server config. All durations are seconds. Copy to server.yaml and edit.
-# Tokens support ${ENV_VAR} expansion.
+# Tokens and credentials support ${ENV_VAR} expansion.
 host: 0.0.0.0
 port: 8100
 language: zh            # zh | en (add a dict in notify.py MESSAGES for more)
@@ -7,15 +7,27 @@ public_base: http://127.0.0.1:8100   # used in notification texts
 admin_token: change-me  # read-only admin page access (?token=)
 db_path: a2a.db
 
+# One IM per domain: each domain entry may set its own `channel`; owners bind on
+# exactly that one. default_channel is the fallback for domains without an
+# explicit channel. An adapter registers only when its credentials below are
+# complete; an explicitly configured domain channel that is unavailable stops
+# the server at startup (fix the creds or the channel, don't boot half-working).
+default_channel: log
+# feishu:                        # 企业自建应用 (scopes: im:message, contact users/batch_get_id)
+#   app_id: cli_xxx
+#   app_secret: ${FEISHU_APP_SECRET}
+# telegram_bot_token: "123456:ABC-DEF..."   # owners declare their numeric chat id
+# slack_bot_token: xoxb-...                  # scopes: chat:write, im:write, users:read.email
+
 domains:
   - id: team-a
     token: ${A2A_TOKEN_A}
   - id: team-b
     token: ${A2A_TOKEN_B}
+    # channel: feishu            # overrides default_channel for this domain
 
-default_channel: log    # channel registry lives in notify.py; feishu/dingtalk/slack adapters plug in there
 online_timeout: 90
-poll_wait: 30
+poll_wait: 30              # must stay < 60 (worker HTTP client gives up at 65s)
 sweep_interval: 5
 dispatch_grace: 60
 agent_retention: 259200     # 3d

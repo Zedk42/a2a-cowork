@@ -6,13 +6,16 @@ import yaml
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+import im_channels
 import notify
 from db import INFLIGHT, connect
 
 # Concurrency contract: everything runs on ONE asyncio event loop with SYNCHRONOUS
 # sqlite calls. The read-modify-write sequences in emit()/deliver() rely on no
 # `await` appearing inside a DB section — adding one there silently breaks
-# atomicity. Keep DB sections await-free.
+# atomicity. Keep DB sections await-free. Notification sends are blocking IM
+# HTTP calls and therefore always run in a thread (asyncio.to_thread), AFTER the
+# commit of the state transition they describe.
 
 DEFAULTS = {
     "host": "0.0.0.0", "port": 8100, "language": "zh", "db_path": "a2a.db",
@@ -21,6 +24,10 @@ DEFAULTS = {
     "task_retention": 2592000, "approval_timeout": 1800, "input_required_timeout": 86400,
     "default_task_timeout": 3600,
 }
+
+def env_expand(v):
+    return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), str(v))
+
 
 _cfg_path = Path(os.environ.get("A2A_SERVER_CONFIG", Path(__file__).parent / "server.yaml"))
 if not _cfg_path.exists():
@@ -39,9 +46,19 @@ if not isinstance(CFG.get("domains"), list) or not CFG["domains"]:
 for _d in CFG["domains"]:
     if not _d.get("id") or not _d.get("token"):
         raise SystemExit(f"config error: every domain needs id and token, got {_d!r}")
-if CFG["default_channel"] not in notify.CHANNELS:
-    raise SystemExit(f"config error: default_channel {CFG['default_channel']!r} is not implemented "
-                     f"(available: {', '.join(notify.CHANNELS)})")
+# IM adapters register only when their credentials are complete; the rest stay
+# unavailable (register answers 400 channel_unavailable)
+notify.CHANNELS.update(im_channels.build({
+    **({k: env_expand(v) for k, v in CFG["feishu"].items()} if isinstance(CFG.get("feishu"), dict) else {}),
+    **({"telegram_bot_token": env_expand(CFG["telegram_bot_token"])} if CFG.get("telegram_bot_token") else {}),
+    **({"slack_bot_token": env_expand(CFG["slack_bot_token"])} if CFG.get("slack_bot_token") else {}),
+}))
+DOMAINS = {dm["id"]: dm for dm in CFG["domains"]}
+for _dm in CFG["domains"]:  # one IM per domain; that channel must actually exist
+    _ch = _dm.get("channel") or CFG["default_channel"]
+    if _ch not in notify.CHANNELS:
+        raise SystemExit(f"config error: channel {_ch!r} of domain {_dm['id']!r} is not available "
+                         f"(configured: {', '.join(notify.CHANNELS)})")
 if CFG["language"] not in notify.MESSAGES:
     raise SystemExit(f"config error: language {CFG['language']!r} not in catalog {list(notify.MESSAGES)}")
 CFG["public_base"] = str(CFG["public_base"] or "").rstrip("/")  # no doubled slash in notify links
@@ -90,8 +107,11 @@ def iso(ts):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
 
-def env_expand(v):
-    return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), str(v))
+def domain_channel(d) -> str:
+    """The one IM this domain uses; owners bind on exactly it (uniformity contract).
+    .get(): DB rows may outlive a domain removed from the config — they must not
+    crash the sweeper or /admin, they simply keep the default channel."""
+    return DOMAINS.get(d, {}).get("channel") or CFG["default_channel"]
 
 
 def domain_of(request, path_domain) -> str:
@@ -148,19 +168,20 @@ def owner_binding(domain, username):
     """The binding notifications actually go through: default channel first, else any.
     Single source of truth — directory health must reflect the real send path."""
     return (q1("SELECT * FROM owner_bindings WHERE domain_id=? AND username=? AND channel=?",
-               (domain, username, CFG["default_channel"]))
+               (domain, username, domain_channel(domain)))
             or q1("SELECT * FROM owner_bindings WHERE domain_id=? AND username=? LIMIT 1", (domain, username)))
 
 
-def send_to_owner(domain, username, key, task_id=None, ctx=None):
-    """Best-effort notify; failures are recorded, never block task flow."""
+async def send_to_owner(domain, username, key, task_id=None, ctx=None):
+    """Best-effort notify; failures are recorded, never block task flow.
+    Sends run in a worker thread — a slow IM must never stall the event loop."""
     b = owner_binding(domain, username)
     try:
         text = notify.t(key, **(ctx or {}))
         if not b or not b["verified"]:
             raise LookupError("no verified binding")
         # send through the channel the binding belongs to, not blindly the default
-        notify.CHANNELS[b["channel"]].send_text(b["platform_uid"], text)
+        await asyncio.to_thread(notify.CHANNELS[b["channel"]].send_text, b["platform_uid"], text)
         kind = "notify"
     except Exception as e:
         kind, text = "notify_failed", f"{key}: {e}"
@@ -169,7 +190,7 @@ def send_to_owner(domain, username, key, task_id=None, ctx=None):
         emit(task_id, domain, kind, {"to": username, "text": text})
 
 
-def notify_task(task, key, to="both", **ctx):
+async def notify_task(task, key, to="both", **ctx):
     """to: both | initiator | target — which owners get the message."""
     d = task["domain_id"]
     kv = {"base": CFG["public_base"], "domain": d, "task_id": task["id"],
@@ -178,17 +199,17 @@ def notify_task(task, key, to="both", **ctx):
                               (task["target"], to in ("both", "target"))) if want]
     for aid in dict.fromkeys(aids):  # a self-dispatched task must not notify the same owner twice
         if a := q1("SELECT owner_username o FROM agents WHERE domain_id=? AND agent_id=?", (d, aid)):
-            send_to_owner(d, a["o"], key, task["id"], kv)
+            await send_to_owner(d, a["o"], key, task["id"], kv)
 
 
-def fail_task(task, reason, to="both", output_head=None):
+async def fail_task(task, reason, to="both", output_head=None):
     # guarded: a task already in a terminal state can never be re-failed (no revival, no double notify)
     if x("UPDATE tasks SET status='failed', fail_reason=?, finished_at=? WHERE id=? AND status NOT IN ('completed','failed','canceled')",
          (reason, now(), task["id"])) == 0:
         return False
     emit(task["id"], task["domain_id"], "state_change", {"to": "failed", "reason": reason,
                                                          **({"output": output_head[:2000]} if output_head else {})})
-    notify_task(task, "task_failed", to=to, reason=notify.reason_desc(reason))
+    await notify_task(task, "task_failed", to=to, reason=notify.reason_desc(reason))
     wake(task["domain_id"], task["target"])
     return True
 
@@ -238,9 +259,11 @@ async def register(d, req: Request):
         raise ApiErr(400, "notify must have channel, id_type and id")
     if nb["channel"] not in notify.CHANNELS:
         raise ApiErr(400, "channel_unavailable")
+    if nb["channel"] != domain_channel(d):
+        raise ApiErr(400, f"notify.channel must be {domain_channel(d)} — the uniform channel of this domain")
     ch = notify.CHANNELS[nb["channel"]]
-    try:
-        uid = ch.normalize(nb)
+    try:  # normalize may hit the platform API (email→open_id): keep it off the event loop
+        uid = await asyncio.to_thread(ch.normalize, nb)
         verified = 1
     except Exception:
         uid, verified = "", 0
@@ -265,7 +288,8 @@ async def register(d, req: Request):
     DB.commit()
     if verified:
         try:
-            ch.send_text(uid, notify.t("register_verify", owner=b["owner_username"], agent=b["agent_id"]))
+            await asyncio.to_thread(ch.send_text, uid,
+                                    notify.t("register_verify", owner=b["owner_username"], agent=b["agent_id"]))
         except Exception:  # the delivery is part of verification, not just the id conversion
             DB.execute("UPDATE owner_bindings SET verified=0 WHERE domain_id=? AND username=? AND channel=?",
                        (d, b["owner_username"], nb["channel"]))
@@ -282,15 +306,17 @@ async def deregister(d, aid, req: Request):
     domain_of(req, d)
     a = require_agent(d, aid)
     for t in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status NOT IN ('completed','failed','canceled')", (d, aid)):
-        fail_task(t, "agent_deregistered", to="initiator")
-    send_to_owner(d, a["owner_username"], "agent_deregistered", task_id=f"reg:{aid}",
-                  ctx={"agent": aid})  # BEFORE deleting the binding, or the goodbye can never be delivered
-    x("DELETE FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
-    if not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (d, a["owner_username"])):
-        x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (d, a["owner_username"]))
-    DB.commit()
-    drop_waiter(d, aid)
-    DEREGISTERED[(d, aid)] = now() + 60
+        await fail_task(t, "agent_deregistered", to="initiator")
+    await send_to_owner(d, a["owner_username"], "agent_deregistered", task_id=f"reg:{aid}",
+                        ctx={"agent": aid})  # BEFORE deleting the binding, or the goodbye can never be delivered
+    # the send above awaits, so a re-register may have landed meanwhile (deregister
+    # → restart with new config): only OUR session's row may die, the fresh one survives
+    if x("DELETE FROM agents WHERE domain_id=? AND agent_id=? AND session=?", (d, aid, a["session"])):
+        if not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (d, a["owner_username"])):
+            x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (d, a["owner_username"]))
+        DB.commit()
+        drop_waiter(d, aid)
+        DEREGISTERED[(d, aid)] = now() + 60
     return Response(status_code=204)
 
 
@@ -310,7 +336,7 @@ async def list_agents(d, req: Request):
 
 # ---------- task lifecycle ----------
 
-def create_task_core(d, initiator, target_id, text, timeout=None):
+async def create_task_core(d, initiator, target_id, text, timeout=None):
     target = require_agent(d, target_id)
     if not isinstance(text, str) or not text.strip():
         raise ApiErr(400, "text must be a non-empty string")
@@ -326,8 +352,8 @@ def create_task_core(d, initiator, target_id, text, timeout=None):
                    (tid, d, initiator, target_id, text, convo, timeout, ts, "failed", "source_not_allowed", ts, ts))
         DB.commit()
         emit(tid, d, "state_change", {"to": "failed", "reason": "source_not_allowed"})
-        notify_task({"id": tid, "domain_id": d, "initiator": initiator, "target": target_id},
-                    "task_failed", to="target", reason=notify.reason_desc("source_not_allowed"))
+        await notify_task({"id": tid, "domain_id": d, "initiator": initiator, "target": target_id},
+                          "task_failed", to="target", reason=notify.reason_desc("source_not_allowed"))
         return tid, "failed"
     if target["accept_policy"] == "manual":
         DB.execute("INSERT INTO tasks (id,domain_id,initiator,target,text,convo,timeout_seconds,"
@@ -337,8 +363,8 @@ def create_task_core(d, initiator, target_id, text, timeout=None):
                    "VALUES (?,?,'pending',?,NULL)", (tid, d, ts + CFG["approval_timeout"]))
         DB.commit()
         emit(tid, d, "state_change", {"to": "pending-approval"})
-        notify_task({"id": tid, "domain_id": d, "initiator": initiator, "target": target_id}, "manual_confirm",
-                    to="target", agent=target_id, summary=text[:120])
+        await notify_task({"id": tid, "domain_id": d, "initiator": initiator, "target": target_id}, "manual_confirm",
+                          to="target", agent=target_id, summary=text[:120])
         return tid, "pending-approval"
     DB.execute("INSERT INTO tasks (id,domain_id,initiator,target,text,convo,timeout_seconds,"
                "created_at,status,available_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -346,8 +372,8 @@ def create_task_core(d, initiator, target_id, text, timeout=None):
     DB.commit()
     emit(tid, d, "state_change", {"to": "available"})
     if target["accept_policy"] == "notify_run":
-        notify_task({"id": tid, "domain_id": d, "initiator": initiator, "target": target_id}, "task_received",
-                    to="target", agent=target_id, summary=text[:120])
+        await notify_task({"id": tid, "domain_id": d, "initiator": initiator, "target": target_id}, "task_received",
+                          to="target", agent=target_id, summary=text[:120])
     wake(d, target_id)
     return tid, "available"
 
@@ -365,7 +391,7 @@ def followup_core(d, task, text):
     return "available"
 
 
-def cancel_core(task, reason):
+async def cancel_core(task, reason):
     was_pa = task["status"] == "pending-approval"
     if x("UPDATE tasks SET status='canceled', fail_reason=?, finished_at=? WHERE id=? AND status NOT IN ('completed','failed','canceled')",
          (reason, now(), task["id"])) == 0:
@@ -374,7 +400,7 @@ def cancel_core(task, reason):
         x("UPDATE approvals SET state='canceled', decided_at=? WHERE task_id=?", (now(), task["id"]))
     DB.commit()
     emit(task["id"], task["domain_id"], "state_change", {"to": "canceled", "reason": reason})
-    notify_task(task, "task_canceled", reason=notify.reason_desc(reason))
+    await notify_task(task, "task_canceled", reason=notify.reason_desc(reason))
     if task["status"] in INFLIGHT:
         wake(task["domain_id"], task["target"])
     return "canceled"
@@ -390,7 +416,7 @@ async def create_task(d, req: Request):
     if not b.get("target") or not b.get("text"):
         raise ApiErr(400, "missing target/text")
     require_agent(d, initiator)
-    tid, status = create_task_core(d, initiator, b["target"], b["text"], b.get("timeout_seconds"))
+    tid, status = await create_task_core(d, initiator, b["target"], b["text"], b.get("timeout_seconds"))
     return JSONResponse({"task_id": tid, "status": status}, status_code=201)
 
 
@@ -424,7 +450,7 @@ async def cancel_task(d, tid, req: Request):
     task = require_task(d, tid)
     if req.headers.get("x-agent-id") != task["initiator"]:
         raise ApiErr(403, "not initiator")  # owners abort via /action
-    return {"status": cancel_core(task, "canceled_by_initiator")}
+    return {"status": await cancel_core(task, "canceled_by_initiator")}
 
 
 @app.post("/domains/{d}/tasks/{tid}/messages")
@@ -467,13 +493,13 @@ async def owner_action(d, tid, req: Request):
     if action == "reject":
         if task["status"] != "pending-approval":
             raise ApiErr(409, "not pending-approval")
-        if not fail_task(task, "rejected"):
+        if not await fail_task(task, "rejected"):
             raise ApiErr(409, "not pending-approval")
         x("UPDATE approvals SET state='rejected', decided_at=? WHERE task_id=?", (now(), tid))
         DB.commit()
         return {"status": "failed"}
     if action == "abort":
-        return {"status": cancel_core(task, "canceled_by_owner")}
+        return {"status": await cancel_core(task, "canceled_by_owner")}
     raise ApiErr(400, "bad action")
 
 
@@ -508,9 +534,9 @@ async def poll(d, aid, req: Request):
         # any other session belongs to a dead/old poller and fails immediately
         foreign = t["lease_session"] and t["lease_session"] != agent_session
         if (orphan and (foreign or now() - t["dispatched_at"] > CFG["dispatch_grace"])):
-            fail_task(t, "worker_restart")
+            await fail_task(t, "worker_restart")
 
-    def deliver():
+    async def deliver():
         # re-read inside deliver: the second call runs AFTER the long-poll await, during
         # which the agent may have re-registered (new session) — leasing under the stale
         # captured session would get the task killed as worker_restart on the next poll
@@ -541,11 +567,11 @@ async def poll(d, aid, req: Request):
         emit(row["id"], d, "state_change", {"to": "dispatched"})
         t = q1("SELECT * FROM tasks WHERE id=?", (row["id"],))
         if a["default_driver_kind"] == "manual":  # kind, not the driver's name
-            notify_task(t, "manual_dispatch", to="target", summary=t["text"][:200])
+            await notify_task(t, "manual_dispatch", to="target", summary=t["text"][:200])
         return {"task": {"id": t["id"], "lease_id": lease, "text": t["text"], "initiator": t["initiator"],
                          "timeout_seconds": t["timeout_seconds"], "convo": json.loads(t["convo"])}}
 
-    if (r := deliver()) is not None:
+    if (r := await deliver()) is not None:
         return r
     if not b.get("block", True):
         return Response(status_code=204)
@@ -561,7 +587,7 @@ async def poll(d, aid, req: Request):
     # agents.session, so the orphan is recovered by the grace-window restart
     # detection (or receive_timeout at 2×grace) — bounded, visible, and
     # re-dispatchable by a human.
-    return (r := deliver()) or Response(status_code=204)
+    return (r := await deliver()) or Response(status_code=204)
 
 
 @app.post("/domains/{d}/agents/{aid}/results")
@@ -577,7 +603,7 @@ async def results(d, aid, req: Request):
     if not (lease_ok and task["status"] in ("dispatched", "working")):
         if task and not q1("SELECT 1 FROM task_events WHERE domain_id=? AND task_id=? AND type='late_result'", (d, task["id"])):
             emit(task["id"], d, "late_result", {"from_agent": aid})
-            notify_task(task, "late_result")
+            await notify_task(task, "late_result")
         return {"accepted": False, "reason": "late_result"}
     status = b.get("status")
     out_text = str(b.get("output") or "")  # never let a non-str poison slicing downstream
@@ -588,10 +614,10 @@ async def results(d, aid, req: Request):
              (json.dumps(convo, ensure_ascii=False), now(), task["id"])) == 0:
             raise ApiErr(409, "task no longer running")
         emit(task["id"], d, "state_change", {"to": "completed"})
-        notify_task(task, "task_completed", output_head=out_text[:400])
+        await notify_task(task, "task_completed", output_head=out_text[:400])
     elif status == "failed":
-        reason = b.get("fail_reason")  # client value: keep only a usable string (the http driver forwards its own)
-        fail_task(task, reason if isinstance(reason, str) and reason else "driver_error", output_head=out_text)
+        reason = b.get("fail_reason")  # client value: keep only a usable string
+        await fail_task(task, reason if isinstance(reason, str) and reason else "driver_error", output_head=out_text)
     elif status == "input-required":
         convo = json.loads(task["convo"])
         convo.append({"from": aid, "text": b.get("question", ""), "at": now()})
@@ -599,7 +625,7 @@ async def results(d, aid, req: Request):
           (now(), json.dumps(convo, ensure_ascii=False), task["id"]))
         DB.commit()
         emit(task["id"], d, "state_change", {"to": "input-required"})
-        notify_task(task, "input_required", to="initiator", question=b.get("question", ""))
+        await notify_task(task, "input_required", to="initiator", question=b.get("question", ""))
     else:
         raise ApiErr(400, "bad status")
     wake(d, aid)
@@ -622,13 +648,13 @@ async def sweep():
                     for task in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status IN (?,?,?)",
                                   (a["domain_id"], a["agent_id"], *INFLIGHT)):
                         if offline:
-                            fail_task(task, "worker_offline")
+                            await fail_task(task, "worker_offline")
                         elif task["status"] == "working" and task["started_at"] + (task["expected_seconds"] or 2 * task["timeout_seconds"]) + 120 < t:
-                            fail_task(task, "timeout_stale")
+                            await fail_task(task, "timeout_stale")
                         elif task["status"] == "dispatched" and task["dispatched_at"] + 2 * CFG["dispatch_grace"] < t:
-                            fail_task(task, "receive_timeout")
+                            await fail_task(task, "receive_timeout")
                         elif task["status"] == "input-required" and task["ir_at"] and task["ir_at"] + CFG["input_required_timeout"] < t:
-                            fail_task(task, "input_timeout")
+                            await fail_task(task, "input_timeout")
                 except Exception as e:
                     DB.rollback()
                     print(f"[sweep] skip agent {a['agent_id']}: {e}", flush=True)
@@ -636,14 +662,14 @@ async def sweep():
                 task = q1("SELECT * FROM tasks WHERE id=?", (ap["task_id"],))
                 x("UPDATE approvals SET state='expired', decided_at=? WHERE task_id=?", (t, ap["task_id"]))
                 if task and task["status"] == "pending-approval":
-                    fail_task(task, "approval_expired")
+                    await fail_task(task, "approval_expired")
             for a in q("SELECT * FROM agents WHERE last_seen_at IS NULL OR last_seen_at < ?", (t - CFG["agent_retention"],)):
                 for task in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status NOT IN ('completed','failed','canceled')",
                               (a["domain_id"], a["agent_id"])):
-                    fail_task(task, "agent_deregistered", to="initiator")
-                send_to_owner(a["domain_id"], a["owner_username"], "agent_cleaned",
-                              task_id=f"reg:{a['agent_id']}",
-                              ctx={"agent": a["agent_id"], "days": int(CFG["agent_retention"] // 86400)})
+                    await fail_task(task, "agent_deregistered", to="initiator")
+                await send_to_owner(a["domain_id"], a["owner_username"], "agent_cleaned",
+                                    task_id=f"reg:{a['agent_id']}",
+                                    ctx={"agent": a["agent_id"], "days": int(CFG["agent_retention"] // 86400)})
                 x("DELETE FROM agents WHERE domain_id=? AND agent_id=?", (a["domain_id"], a["agent_id"]))
                 if not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (a["domain_id"], a["owner_username"])):
                     x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (a["domain_id"], a["owner_username"]))
@@ -664,10 +690,10 @@ async def admin(token=""):
     if not CFG["admin_token"] or token != CFG["admin_token"]:
         return HTMLResponse("unauthorized", status_code=401)
     t = now()
-    verified_owners = {}  # owner_binding semantics: default channel wins, else any binding
+    verified_owners = {}  # owner_binding semantics: the domain's channel wins, else any binding
     for b in q("SELECT domain_id, username, channel, verified FROM owner_bindings"):
         key = (b["domain_id"], b["username"])
-        if key not in verified_owners or b["channel"] == CFG["default_channel"]:
+        if key not in verified_owners or b["channel"] == domain_channel(b["domain_id"]):
             verified_owners[key] = b["verified"]
     rows_a = "".join(
         f"<tr><td>{escape(a['agent_id'])}</td><td>{escape(a['owner_username'])}</td><td>{escape(a['accept_policy'])}</td>"
@@ -691,6 +717,10 @@ if __name__ == "__main__":
         if not env_expand(dm.get("token", "")):
             print(f"[server] WARNING: domain {dm['id']} has an empty token ($VAR unset?); "
                   f"its requests will all get 401", flush=True)
+    _f = CFG.get("feishu") or {}
+    if (_f.get("app_id") or _f.get("app_secret")) and "feishu" not in notify.CHANNELS:
+        print("[server] WARNING: feishu config incomplete (needs both app_id and app_secret); "
+              "channel disabled", flush=True)
     if CFG["admin_token"] in ("", "change-me"):
         print("[server] WARNING: admin_token is default/empty — /admin exposes task texts; "
               "set a real token in server.yaml", flush=True)
