@@ -18,6 +18,15 @@ default_channel: log
 #   app_secret: ${FEISHU_APP_SECRET}
 # telegram_bot_token: "123456:ABC-DEF..."   # owners declare their numeric chat id
 # slack_bot_token: xoxb-...                  # scopes: chat:write, im:write, users:read.email
+# dingtalk:                      # 企业内部应用工作通知 (notify-only, async delivery)
+#   app_key: ding_xxx
+#   app_secret: ${DINGTALK_APP_SECRET}
+#   agent_id: 123456789
+# wecom:                         # 企业微信自建应用 (recipient must be in visible range)
+#   corp_id: ww_xxx
+#   corp_secret: ${WECOM_CORP_SECRET}
+#   agent_id: 1000002
+# discord_bot_token: ...                     # owners declare their numeric user id (snowflake)
 
 domains:
   - id: team-a

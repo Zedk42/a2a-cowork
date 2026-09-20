@@ -61,8 +61,9 @@ never guess these from the system (`whoami` output is not a username):
 2. Owner username for notifications.
 3. Which IM platform they use and their ID on it. The whole domain must be on
    the same platform — the server enforces it. Examples: Feishu email, Telegram
-   numeric chat id (open a chat with the bot and /start first), Slack email.
-   Set `notify.channel` to that platform; if registration answers
+   numeric chat id (open a chat with the bot and /start first), Slack email,
+   DingTalk or WeCom mobile number, Discord numeric user id. Set
+   `notify.channel` to that platform; if registration answers
    `channel_unavailable`, the platform is not enabled on the server — a domain
    runs one platform, set server-side, so tell the maintainer.
 4. Accept policy, default `notify_run`:

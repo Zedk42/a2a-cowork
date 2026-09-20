@@ -272,8 +272,15 @@ def server_checks():
     s, agents = call("GET", "/domains/team-a/agents")
     check("robust/null-last-seen-no-500", s == 200 and any(a["agent_id"] == "w2" and a["online"] is False for a in agents), (s, agents))
     check("robust/admin-null-last-seen-no-500", status_only("/admin?token=admtok") == 200)
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/admin/data?token=admtok", timeout=10) as x:
+        ad = json.loads(x.read())
+    check("robust/admin-data-snapshot", any(a["agent_id"] == "w2" and a["online"] is False for a in ad["agents"])
+          and isinstance(ad["events"], list), ad.get("agents"))
     f = wait_status(tid, "failed", timeout=15)
     check("robust/null-last-seen-treated-offline", f.get("fail_reason") == "worker_offline", f)
+    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/admin/task/{tid}?token=admtok", timeout=10) as x:
+        at = json.loads(x.read())
+    check("robust/admin-task-detail", at.get("id") == tid and at.get("convo") and at.get("events"), at.get("id"))
 
     # ---------- sweep & ordering mechanisms (FIFO, restart detection, timeouts, retention) ----------
 

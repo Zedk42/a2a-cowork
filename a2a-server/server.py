@@ -1,5 +1,4 @@
 import asyncio, json, os, re, time, uuid
-from html import escape
 from pathlib import Path
 
 import yaml
@@ -8,6 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 import im_channels
 import notify
+from admin_page import ADMIN_HTML
 from db import INFLIGHT, connect
 
 # Concurrency contract: everything runs on ONE asyncio event loop with SYNCHRONOUS
@@ -46,13 +46,20 @@ if not isinstance(CFG.get("domains"), list) or not CFG["domains"]:
 for _d in CFG["domains"]:
     if not _d.get("id") or not _d.get("token"):
         raise SystemExit(f"config error: every domain needs id and token, got {_d!r}")
+def _im_creds():
+    out = {}
+    for k in ("feishu", "dingtalk", "wecom"):
+        if isinstance(CFG.get(k), dict):
+            out[k] = {name: env_expand(v) for name, v in CFG[k].items()}
+    for k in ("telegram_bot_token", "slack_bot_token", "discord_bot_token"):
+        if CFG.get(k):
+            out[k] = env_expand(CFG[k])
+    return out
+
+
 # IM adapters register only when their credentials are complete; the rest stay
 # unavailable (register answers 400 channel_unavailable)
-notify.CHANNELS.update(im_channels.build({
-    **({k: env_expand(v) for k, v in CFG["feishu"].items()} if isinstance(CFG.get("feishu"), dict) else {}),
-    **({"telegram_bot_token": env_expand(CFG["telegram_bot_token"])} if CFG.get("telegram_bot_token") else {}),
-    **({"slack_bot_token": env_expand(CFG["slack_bot_token"])} if CFG.get("slack_bot_token") else {}),
-}))
+notify.CHANNELS.update(im_channels.build(_im_creds()))
 DOMAINS = {dm["id"]: dm for dm in CFG["domains"]}
 for _dm in CFG["domains"]:  # one IM per domain; that channel must actually exist
     _ch = _dm.get("channel") or CFG["default_channel"]
@@ -685,30 +692,49 @@ async def sweep():
 
 # ---------- read-only admin ----------
 
+def _admin_ok(token):
+    return CFG["admin_token"] and token == CFG["admin_token"]
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin(token=""):
-    if not CFG["admin_token"] or token != CFG["admin_token"]:
+    if not _admin_ok(token):
         return HTMLResponse("unauthorized", status_code=401)
+    return ADMIN_HTML  # static shell; the page polls /admin/data itself
+
+
+@app.get("/admin/data")
+async def admin_data(token=""):
+    if not _admin_ok(token):
+        return JSONResponse({"error": {"code": "unauthorized"}}, status_code=401)
     t = now()
-    verified_owners = {}  # owner_binding semantics: the domain's channel wins, else any binding
-    for b in q("SELECT domain_id, username, channel, verified FROM owner_bindings"):
-        key = (b["domain_id"], b["username"])
-        if key not in verified_owners or b["channel"] == domain_channel(b["domain_id"]):
-            verified_owners[key] = b["verified"]
-    rows_a = "".join(
-        f"<tr><td>{escape(a['agent_id'])}</td><td>{escape(a['owner_username'])}</td><td>{escape(a['accept_policy'])}</td>"
-        f"<td>{escape(a['default_driver'])}</td><td>{'online' if (a['last_seen_at'] and t - a['last_seen_at'] < CFG['online_timeout']) else 'offline'}</td>"
-        f"<td>{'ok' if verified_owners.get((a['domain_id'], a['owner_username'])) else 'unverified'}</td>"
-        f"<td>{escape(a['description'])}</td></tr>"
-        for a in q("SELECT * FROM agents ORDER BY domain_id, agent_id"))
-    rows_t = "".join(f"<tr><td>{t2['id'][:8]}</td><td>{escape(t2['domain_id'])}</td><td>{escape(t2['initiator'])}</td>"
-                     f"<td>{escape(t2['target'])}</td><td>{escape(t2['status'])}</td><td>{escape(t2['fail_reason'] or '')}</td></tr>"
-                     for t2 in q("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 100"))
-    rows_e = "".join(f"<tr><td>{escape(e['task_id'][:12])}</td><td>{escape(e['type'])}</td><td>{escape(e['payload'][:160])}</td></tr>"
-                     for e in q("SELECT * FROM task_events ORDER BY created_at DESC LIMIT 50"))
-    return f"<h1>A2A Co-Work</h1><h2>Agents</h2><table border=1><tr><th>agent</th><th>owner</th><th>policy</th><th>driver</th><th>state</th><th>notify</th><th>desc</th></tr>{rows_a}</table>" \
-           f"<h2>Tasks</h2><table border=1><tr><th>id</th><th>domain</th><th>from</th><th>to</th><th>status</th><th>reason</th></tr>{rows_t}</table>" \
-           f"<h2>Recent events</h2><table border=1><tr><th>task</th><th>type</th><th>payload</th></tr>{rows_e}</table>"
+    agents = []
+    for a in q("SELECT * FROM agents ORDER BY domain_id, agent_id"):
+        b = owner_binding(a["domain_id"], a["owner_username"])  # same lookup the send path uses
+        agents.append({"domain": a["domain_id"], "agent_id": a["agent_id"], "owner": a["owner_username"],
+                       "description": a["description"], "accept_policy": a["accept_policy"],
+                       "default_driver": a["default_driver"],
+                       "online": bool(a["last_seen_at"] and t - a["last_seen_at"] < CFG["online_timeout"]),
+                       "notify_verified": bool(b and b["verified"])})
+    tasks = [{"id": k["id"], "domain": k["domain_id"], "initiator": k["initiator"], "target": k["target"],
+              "status": k["status"], "fail_reason": k["fail_reason"], "created_at": iso(k["created_at"]),
+              "finished_at": iso(k["finished_at"]) if k["finished_at"] else None}
+             for k in q("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 100")]
+    events = [{"n": e["n"], "domain": e["domain_id"], "task_id": e["task_id"], "seq": e["seq"],
+               "type": e["type"], "payload": e["payload"], "at": iso(e["created_at"])}
+              for e in reversed(q("SELECT rowid n, domain_id, task_id, seq, type, payload, created_at "
+                                  "FROM task_events ORDER BY rowid DESC LIMIT 500"))]  # n: append order, newest last
+    return {"agents": agents, "tasks": tasks, "events": events}
+
+
+@app.get("/admin/task/{tid}")
+async def admin_task(tid, token=""):
+    if not _admin_ok(token):
+        return JSONResponse({"error": {"code": "unauthorized"}}, status_code=401)
+    task = q1("SELECT * FROM tasks WHERE id=?", (tid,))
+    if not task:
+        raise ApiErr(404, "no task")
+    return task_json(task, convo=True)  # full convo + events: the interaction record for debugging
 
 
 if __name__ == "__main__":
@@ -717,10 +743,10 @@ if __name__ == "__main__":
         if not env_expand(dm.get("token", "")):
             print(f"[server] WARNING: domain {dm['id']} has an empty token ($VAR unset?); "
                   f"its requests will all get 401", flush=True)
-    _f = CFG.get("feishu") or {}
-    if (_f.get("app_id") or _f.get("app_secret")) and "feishu" not in notify.CHANNELS:
-        print("[server] WARNING: feishu config incomplete (needs both app_id and app_secret); "
-              "channel disabled", flush=True)
+    for _name in ("feishu", "dingtalk", "wecom"):
+        if CFG.get(_name) and _name not in notify.CHANNELS:
+            print(f"[server] WARNING: {_name} config incomplete; channel disabled "
+                  f"(complete the credentials or drop the section)", flush=True)
     if CFG["admin_token"] in ("", "change-me"):
         print("[server] WARNING: admin_token is default/empty — /admin exposes task texts; "
               "set a real token in server.yaml", flush=True)
