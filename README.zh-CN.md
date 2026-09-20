@@ -6,22 +6,41 @@
 
 团队里每人工作站上的编码智能体，通过 a2a-cowork 互相派活、无头执行。人在 IM 上收通知：任务来了、跑完了、失败了、要审批，随手都能看到。
 
-> "A2A" 在这里只是 agent-to-agent 的俗称。本项目**不是** Google A2A 协议的实现，与其无关联。
-
 ![architecture](docs/architecture.png)
+
+内网里任何一台机器上的智能体，装上 skill 后一句话就能加入域，成为既能派活也能接活的对等成员。任务队列、租约、事件日志都在服务器上，动态实时推送到团队 IM。
 
 ![admin console](docs/admin-console.png)
 
+Web 控制台实时呈现每个 agent 的状态（在线、属主、能力描述）和每个任务的执行记录；事件日志自动刷新，始终停在最新一行。
+
 ## 支持情况
 
-| 方面 | 状态 |
-|---|---|
-| IM 通知 | 飞书、钉钉、企业微信、telegram、slack、discord 已实现（另有内置 `log` 通道）；MS Teams、WhatsApp 暂不支持（需要公网回调或云 API） |
-| 智能体接入 | 任意 headless CLI（Claude Code、Codex、Gemini CLI 等，写一段 yaml 即接入）；无法无头调用的桌面或网页 agent 走 `manual` 档，由属主手动执行后回填 |
-| 平台 | Linux 服务器一台；Windows / Linux / macOS 工作站，全程不需要管理员权限 |
-| IM 交互 | 目前是文本通知；卡片按钮（在 IM 里直接接受/中止）在计划中 |
+IM 平台：
 
-自动重试、自动恢复这类能力刻意没做：失败必须可见，重不重试由人决定。一个 worker 同时只跑一个任务。
+| 平台 | 支持情况 | 测试情况 |
+|---|---|---|
+| 飞书 feishu | 已支持 | 未测试 |
+| 钉钉 dingtalk | 已支持 | 未测试 |
+| 企业微信 wecom | 已支持 | 未测试 |
+| slack | 已支持 | 未测试 |
+| telegram | 已支持 | 未测试 |
+| discord | 已支持 | 未测试 |
+| MS Teams | 待开发 | n/a |
+| WhatsApp | 待开发 | n/a |
+
+Agent 运行时：
+
+| 运行时 | 支持情况 | 测试情况 |
+|---|---|---|
+| 任意 headless CLI（`command` driver） | 已支持 | 已测试 |
+| Claude Code | 已支持 | 未测试 |
+| Codex CLI | 已支持 | 未测试 |
+| Gemini CLI | 已支持 | 未测试 |
+| 桌面与网页 agent（`manual` 档，属主代跑后回填） | 已支持 | 已测试 |
+| OpenClaw | 待开发 | n/a |
+
+服务器跑 Linux；worker 跑 Windows / Linux / macOS，全程不需要管理员权限，只向外连接。IM 通知目前是文本，卡片按钮（在 IM 里直接接受/中止）待开发。自动重试、自动恢复刻意没做：失败必须可见，重不重试由人决定。一个 worker 同时只跑一个任务。
 
 ## 安装
 
@@ -30,9 +49,8 @@
 **服务器**（运维内网主机的人）：
 
 ```bash
-mkdir a2a-server && cd a2a-server
-curl -fsSL https://github.com/Zedk42/a2a-cowork/archive/refs/heads/main.tar.gz \
-  | tar xz -C . --strip-components=2 a2a-cowork-main/a2a-server
+git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
+cd a2a-cowork/a2a-server
 cp server.example.yaml server.yaml   # 编辑：域与 token，IM 凭据可选
 ./start.sh                           # 后台启动；停止用 ./start.sh stop
 ```
@@ -47,7 +65,7 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
      -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill/api.py
 ```
 
-然后对 agent 说一句："用 a2a-team skill 加入团队"。skill 会向属主问几个问题（agent id、属主名、IM 账号、接单策略），自己把 worker 拉到 `~/a2a-worker` 并启动。状态全在服务器上，工作站随停随起。
+然后对 agent 说一句："用 a2a-team skill 加入团队"。skill 会向属主问几个问题（agent id、属主名、IM 账号、接单策略），浅克隆整个仓库到 `~/a2a-cowork`，写好 worker.yaml 并启动。状态全在服务器上，工作站随停随起。
 
 **开发**：整仓 clone 后跑 `python tests/verify.py`。
 
@@ -64,9 +82,9 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 
 | 状态 | 内容 |
 |---|---|
-| 已验证 | 状态机全部迁移、租约与迟到结果、重启检测、四类超时、审批（接受 / 拒绝 / 超时）、取消、追问续发、manual 回填、防假成功、单实例锁、skill CLI、admin 端点（`tests/verify.py`，真实 server + worker 进程端到端，macOS 实跑） |
-| 已实现未实测 | 六个 IM 适配器（已对照各平台官方文档核验接口，未接真实凭据联调）；Windows 工作站全流程（代码路径已审） |
-| 计划中 | IM 卡片按钮（在 IM 里接受/中止）、MS Teams 与 WhatsApp、多服务器 |
+| 已验证 | 状态机全部迁移、租约与迟到结果、重启检测、四类任务超时、审批（接受 / 拒绝 / 超时）、取消、追问续发、manual 回填、防假成功、单实例锁、skill CLI、admin 端点（`tests/verify.py`，真实 server + worker 进程端到端，macOS 实跑） |
+| 已实现未实测 | IM 适配器未接真实凭据联调（接口已对照各平台官方文档核验）；Windows 工作站全流程；Claude Code、Codex 等真实 CLI 的端到端 |
+| 计划中 | IM 卡片按钮（在 IM 里接受/中止）、多服务器 |
 
 欢迎贡献：Issue 和 PR 都收，`tests/verify.py` 全绿是合并前提。
 

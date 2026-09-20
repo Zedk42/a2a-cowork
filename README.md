@@ -8,45 +8,51 @@ Turn the AI coding agents on your team's workstations into coworkers. They
 dispatch tasks to each other, run them headlessly, and keep the humans
 informed over IM: arrivals, results, failures, follow-up questions, approvals.
 
-> "A2A" here just means agent-to-agent. This project is **not** an
-> implementation of the Google A2A protocol and is not affiliated with it.
-
 ![architecture](docs/architecture.png)
 
-*Two identical workstations, each with a coding agent (a2a-team skill loaded)
-and a worker; either can dispatch to the other. The server holds the queue,
-leases, and event log, and pushes to the team's IM.*
+*Any skill-capable agent on any machine in the intranet joins the domain with
+one sentence and becomes a peer that both dispatches and executes. The server
+holds the queue, leases, and event log, and pushes task events to the IM.*
 
 ![admin console](docs/admin-console.png)
 
-*The read-only admin console: every agent (online state, owner, capability
-description), every task, and the full auto-refreshing event log, pinned to
-the newest line.*
+*The web dashboard tracks every agent (online state, owner, capability
+description) and every task's execution record; the event log auto-refreshes
+and stays pinned to the newest line.*
 
 ## What works today
 
-| Area | Supported | Not supported |
-|---|---|---|
-| IM notifications | feishu, dingtalk, wecom, telegram, slack, discord (+ built-in `log`) | MS Teams, WhatsApp (need a public callback or cloud API) |
-| Agent runtimes | any headless CLI via the `command` driver (Claude Code, Codex, Gemini CLI, config only); human-run tasks via the `manual` driver | webhook/HTTP agent services |
-| Platforms | Linux server; Windows / Linux / macOS workers (no admin rights, outbound only) | HA / multi-server |
-| IM interactivity | text notifications | action cards and buttons (approve or abort from IM) |
+IM platforms:
 
-Some things are excluded on purpose: auto-retry and self-healing (failures are
-made visible, humans decide), per-task driver selection, streaming, and
-parallel tasks per worker. One worker runs one task at a time.
+| Platform | Support | Tested |
+|---|---|---|
+| feishu | supported | not yet |
+| dingtalk | supported | not yet |
+| wecom | supported | not yet |
+| slack | supported | not yet |
+| telegram | supported | not yet |
+| discord | supported | not yet |
+| MS Teams | to be built | n/a |
+| WhatsApp | to be built | n/a |
+
+Agent runtimes:
+
+| Runtime | Support | Tested |
+|---|---|---|
+| any headless CLI (`command` driver) | supported | tested |
+| Claude Code | supported | not yet |
+| Codex CLI | supported | not yet |
+| Gemini CLI | supported | not yet |
+| desktop and web agents (`manual` driver, human runs the task) | supported | tested |
+| OpenClaw | to be built | n/a |
+
+The server runs on Linux; workers run on Windows, Linux, and macOS with no
+admin rights and outbound-only connections. IM notifications are text today;
+action cards (approve or abort from IM) are to be built. Auto-retry and
+self-healing are excluded on purpose: failures are made visible, and a human
+decides what happens next. One worker runs one task at a time.
 
 ## How it works
-
-```mermaid
-flowchart TB
-    A["agent A<br/>(initiator)"] -->|"POST /tasks"| S
-    S["A2A Server · FastAPI + SQLite<br/>directory · queue · leases · event log<br/>notify gateway · admin console"]
-    S -->|"long-poll: task + lease<br/>control.cancel"| W["agent B's worker<br/>(workstation, outbound only)"]
-    W -->|"results"| S
-    S -->|"task arrived / done / failed<br/>needs your approval"| P["owners' IM<br/>(feishu / dingtalk / wecom /<br/>telegram / slack / discord)"]
-    S --> B["read-only /admin console<br/>agents · tasks · full event log"]
-```
 
 - Star topology: one server, equal peers. Workers only make outbound long-poll
   connections, so a workstation opens no inbound ports, needs no fixed IP,
@@ -73,9 +79,8 @@ previous instance first, writes the new pid to `a2a.pid`, and logs to
 `a2a-server.log`:
 
 ```bash
-mkdir a2a-server && cd a2a-server
-curl -fsSL https://github.com/Zedk42/a2a-cowork/archive/refs/heads/main.tar.gz \
-  | tar xz -C . --strip-components=2 a2a-cowork-main/a2a-server
+git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
+cd a2a-cowork/a2a-server
 cp server.example.yaml server.yaml   # edit: domains + tokens, IM creds optional
 ./start.sh                           # background start; ./start.sh stop to stop
 ```
@@ -93,9 +98,9 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 ```
 
 Then tell your agent one sentence: "join an a2a team with the a2a-team skill".
-The skill asks the owner a few questions, fetches the worker source into
-`~/a2a-worker` by itself, writes `worker.yaml`, and starts the worker. All
-state lives on the server, so a workstation can be restarted or wiped freely.
+The skill asks the owner a few questions, shallow-clones the repository into
+`~/a2a-cowork`, writes `worker.yaml`, and starts the worker. All state lives
+on the server, so a workstation can be restarted or wiped freely.
 
 ### Whole repository (development)
 
@@ -125,8 +130,8 @@ the two agents plus every event. This is what you want open when debugging.
 | Status | What |
 |---|---|
 | Verified | every task transition, leases and late results, restart detection, all four task timeouts, approvals, cancels, follow-ups, manual reports, anti-fake-success, the single-instance lock, the skill CLI, and the admin endpoints (`tests/verify.py`: real server + worker processes, exercised on macOS) |
-| Built, not yet tested live | the six IM adapters (API shapes checked against each platform's docs; no live-credential run yet); the Windows worker end to end (code paths reviewed) |
-| Planned | interactive IM cards (approve or abort from IM), MS Teams and WhatsApp, multi-server |
+| Built, not yet tested live | the IM adapters against live credentials (API shapes checked against each platform's docs); the Windows worker end to end; real CLI runs such as Claude Code and Codex |
+| Planned | interactive IM cards (approve or abort from IM), multi-server |
 
 Contributions are welcome: issues and PRs alike, with `tests/verify.py` green
 as the merge bar.

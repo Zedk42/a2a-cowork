@@ -18,16 +18,16 @@ import yaml
 
 
 def load():
-    # worker.yaml lives next to this file (monorepo), or in ~/a2a-worker when the
-    # skill installed the worker there; $A2A_WORKER_CONFIG always wins
+    # worker.yaml lives next to this file (monorepo), or where the skill
+    # installed the worker; $A2A_WORKER_CONFIG always wins
     env_cfg = os.environ.get("A2A_WORKER_CONFIG", "").strip()
     cands = ([Path(env_cfg)] if env_cfg else []) + \
         [Path(__file__).parent / "worker.yaml", Path(__file__).parent.parent / "a2a-worker" / "worker.yaml",
-         Path.home() / "a2a-worker" / "worker.yaml"]
+         Path.home() / "a2a-worker" / "worker.yaml", Path.home() / "a2a-cowork" / "a2a-worker" / "worker.yaml"]
     p = next((c for c in cands if c.is_file()), None)
     if not p:
         sys.exit("no worker.yaml found (looked in $A2A_WORKER_CONFIG, here, ../a2a-worker, "
-                 "and ~/a2a-worker); run onboarding per SKILL.md first")
+                 "~/a2a-worker, and ~/a2a-cowork/a2a-worker); run onboarding per SKILL.md first")
     def expand(v):
         if isinstance(v, str):
             return os.path.expandvars(v)

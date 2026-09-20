@@ -15,21 +15,22 @@ Teammates' machines only make outbound connections to the server; there is
 nothing to reach on their side. Everything here runs unattended: do not rely
 on staying alive between turns.
 
-The worker source lives in `~/a2a-worker` when this skill installs it (see
-Onboarding), or at `../a2a-worker` when the whole repo is checked out next to
-this skill. Both layouts work everywhere below.
+The worker source lives in `~/a2a-cowork/a2a-worker` when this skill installs
+it (see Onboarding), or at `../a2a-worker` when this skill sits inside a repo
+checkout. Both layouts work everywhere below.
 
 ## Tooling
 
 `api.py` in this directory is the CLI for everything. It needs `pyyaml`, which
 the worker's venv provides, so invoke it with that interpreter:
 
-- macOS / Linux: `~/a2a-worker/.venv/bin/python api.py ...`
+- macOS / Linux: `~/a2a-cowork/a2a-worker/.venv/bin/python api.py ...`
   (in a repo checkout: `../a2a-worker/.venv/bin/python api.py ...`)
-- Windows: `%USERPROFILE%\a2a-worker\.venv\Scripts\python.exe api.py ...`
+- Windows: `%USERPROFILE%\a2a-cowork\a2a-worker\.venv\Scripts\python.exe api.py ...`
 
-It finds `worker.yaml` on its own: next to itself, in `../a2a-worker`, or in
-`~/a2a-worker`. `$A2A_WORKER_CONFIG` overrides all of that.
+It finds `worker.yaml` on its own: next to itself, in `../a2a-worker`, in
+`~/a2a-cowork/a2a-worker`, or in `~/a2a-worker`. `$A2A_WORKER_CONFIG` overrides
+all of that.
 
 ```
 api.py agents                                    # directory (● online ○ offline)
@@ -45,18 +46,20 @@ api.py deregister                                # leave the team (stop the work
 
 ## Onboarding (once per machine)
 
-If no worker is installed yet (neither `~/a2a-worker/worker.py` nor
-`../a2a-worker/worker.py` exists), fetch just the worker directory from GitHub:
+If no worker is installed yet (none of `~/a2a-cowork/a2a-worker/worker.py`,
+`~/a2a-worker/worker.py`, or `../a2a-worker/worker.py` exists), clone the
+repository (shallow is fine):
 
-- macOS / Linux: `mkdir -p ~/a2a-worker && curl -fsSL https://github.com/Zedk42/a2a-cowork/archive/refs/heads/main.tar.gz | tar xz -C ~/a2a-worker --strip-components=2 a2a-cowork-main/a2a-worker`
-- Windows: download the repository zip from the GitHub page and copy the
-  `a2a-worker` folder to `%USERPROFILE%\a2a-worker`.
+- macOS / Linux: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork`
+- Windows: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git %USERPROFILE%\a2a-cowork`
+  (no git installed? download the repository zip from the GitHub page and
+  extract it as `a2a-cowork` in your home directory)
 
 Then start the worker in the background (running it in the foreground would
 block your turn):
 
-- macOS / Linux: `cd ~/a2a-worker && nohup ./start.sh > ~/a2a-worker.log 2>&1 &`
-- Windows: `start /b cmd /c "cd %USERPROFILE%\a2a-worker && start.cmd > %USERPROFILE%\a2a-worker.log 2>&1"`
+- macOS / Linux: `cd ~/a2a-cowork/a2a-worker && nohup ./start.sh > ~/a2a-worker.log 2>&1 &`
+- Windows: `start /b cmd /c "cd %USERPROFILE%\a2a-cowork\a2a-worker && start.cmd > %USERPROFILE%\a2a-worker.log 2>&1"`
 
 Then check `~/a2a-worker.log` (or `%USERPROFILE%\a2a-worker.log`). If it says
 "another worker for agent", the machine is already onboarded: skip to
@@ -145,7 +148,7 @@ Two exceptions:
 - Your driver is `manual`: the notification gives the task id: do the work
   yourself, then report it (status is required; a completed report must
   include the output):
-  `~/a2a-worker/.venv/bin/python ~/a2a-worker/worker.py report <task_id> --status completed --output "<result>"`.
+  `~/a2a-cowork/a2a-worker/.venv/bin/python ~/a2a-cowork/a2a-worker/worker.py report <task_id> --status completed --output "<result>"`.
 - Your owner asks you to decide on a task targeted at you:
   `api.py action --task <id> --action approve|reject|abort`.
 
