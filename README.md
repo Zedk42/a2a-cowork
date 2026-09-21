@@ -54,48 +54,39 @@ decides what happens next. One worker runs one task at a time.
 
 ## How it works
 
-- Star topology: one server, equal peers. Workers only make outbound long-poll
-  connections, so a workstation opens no inbound ports, needs no fixed IP,
-  and needs no admin rights.
-- Poll is the heartbeat. While a driver runs, the worker keeps polling, so a
+- Star topology: one server, equal peers that both assign tasks and receive
+  them. Workers only make outbound long-poll connections, so a workstation
+  opens no inbound ports and needs no fixed IP.
+- Poll is the heartbeat: while a driver runs, the worker keeps polling, so a
   long task is never misjudged as offline and a cancel arrives in seconds.
-- Results bind to a lease. A report with a stale lease lands as a visible
-  `late_result` event instead of silently rewriting history.
-- Files travel through the server too: attach on dispatch or follow-up
-  (`--file`), the worker materializes them as `files/<name>` next to the task,
-  and anything the driver leaves in `out/` is uploaded and attached to the
-  result. Message payloads carry the meta (name, size, sha256), never the
-  bytes; per-file size, per-task count, and staging retention are capped in
-  server.yaml.
-- A zero exit code proves nothing. Empty output, error markers, or unparseable
-  output is reported as a failure; agents that "succeed" with nothing to show
-  get caught here.
-- People stay in the loop. Task arrivals (for notify-run agents), completions,
-  failures, and follow-up questions are pushed to the owners' IM, and
-  manual-policy agents wait for an explicit approve or reject.
+- File transfer: attach files when dispatching (`--file`); the worker drops
+  them into the task's `files/<name>`, and anything the driver leaves in
+  `out/` is uploaded and attached to the result. Messages carry only the meta
+  (name, size, sha256), never the bytes.
+- Task policy per agent: `auto` runs immediately; `notify_run` (default)
+  notifies the owner while running; `manual` waits for the owner's approval.
+  A source allowlist keeps strangers from dispatching to you.
+- A running agent may ask one question (`NEED_INPUT:` marker); the initiator
+  answers on the same task id and it re-runs with full context.
 
-## Install
+## Installation
 
-The three parts can be installed separately. Take only what you need.
-
-### Server (whoever runs the local server)
-
-Fetch just the server directory, then use the one-key script. It stops a
-previous instance first, writes the new pid to `a2a.pid`, and logs to
-`a2a-server.log`:
+**Server**:
 
 ```bash
 git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
 cd a2a-cowork/a2a-server
-cp server.example.yaml server.yaml   # edit: domains + tokens, IM creds optional
-./start.sh                           # background start; ./start.sh stop to stop
+cp server.example.yaml server.yaml
+./start.sh
 ```
 
-### Skill and worker (each engineer's agent)
+`start.sh` stops a previous instance first, records the pid to `a2a.pid`, and
+logs to `a2a-server.log`.
+
+**Agent**
 
 Fetch the [a2a-skill](https://github.com/Zedk42/a2a-cowork/tree/main/a2a-skill)
-directory into your coding agent's skills folder. Every agent has its own
-location; for Claude Code it is `~/.claude/skills/a2a-team`:
+directory into your agent's skills folder. For Claude Code:
 
 ```bash
 mkdir -p ~/.claude/skills/a2a-team && cd ~/.claude/skills/a2a-team
@@ -104,16 +95,9 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 ```
 
 Then tell your agent one sentence: "join an a2a team with the a2a-team skill".
-The skill asks the owner a few questions, shallow-clones the repository into
-`~/a2a-cowork`, writes `worker.yaml`, and starts the worker. All state lives
-on the server, so a workstation can be restarted or wiped freely.
-
-### Whole repository (development)
-
-```bash
-git clone https://github.com/Zedk42/a2a-cowork.git
-cd a2a-cowork && python tests/verify.py   # after a2a-server/.venv exists (run ./start.sh once)
-```
+The skill asks the owner a few questions (agent id, owner name, messenger
+account, task permissions), installs the worker source into `~/a2a-cowork`,
+writes `worker.yaml`, and starts the worker.
 
 ## Key concepts
 
@@ -129,16 +113,9 @@ cd a2a-cowork && python tests/verify.py   # after a2a-server/.venv exists (run .
 Clicking a task row opens its complete record: the whole conversation between
 the two agents plus every event, which is what you want open when debugging.
 
-## Verification status
+## Contributing
 
-| Status | What |
-|---|---|
-| Verified | every task transition, leases and late results, restart detection, all four task timeouts, approvals, cancels, follow-ups, manual reports, anti-fake-success, the single-instance lock, the skill CLI, and the admin endpoints (`tests/verify.py`: real server + worker processes, exercised on macOS) |
-| Built, not yet tested live | the IM adapters against live credentials (API shapes checked against each platform's docs); the Windows worker end to end; further real CLI runs such as Codex, Gemini, OpenClaw, and Hermes (Claude Code is tested, including bidirectional file transfer between two instances) |
-| Planned | interactive IM cards (approve or abort from IM), multi-server |
-
-Contributions are welcome: issues and PRs alike, with `tests/verify.py` green
-as the merge bar.
+The project is under active development; issues and PRs are welcome.
 
 ## Configuration
 
@@ -152,27 +129,14 @@ dispatch grace, retention, approval timeout). All credentials support
 `worker.yaml` (per workstation): server URL, domain and token, agent identity
 and owner, notify binding (channel plus platform id), and `default_driver`
 with its `cmd` (the prompt arrives via stdin and a task file, never on the
-command line), `timeout`, and `output: last_json|tail`. The two
-`*.example.yaml` files document every key.
-
-## Development
-
-```bash
-python tests/verify.py    # end-to-end regression: real server + real worker processes
-```
-
-The suite boots a real server and real workers and walks every task
-transition: restart detection, leases, timeouts, approvals, cancel delivery,
-manual reports, the skill CLI, and the admin endpoints.
+command line), `timeout`, and `output: last_json|tail`.
 
 ## Security model
 
-Designed for a trusted local network. One static token per domain; knowing the
-token lets a caller act as any agent in that domain, a trade-off accepted for
-now. Worker machines are never reachable from the network. Against hostile
-task text there are per-agent accept policies, source allowlists, and
-driver-level permission flags such as `--permission-mode` and `--sandbox`.
-Task texts come from other agents, not from your colleagues in person.
+Built for a trusted local network. Each domain has one static token: holding
+the token lets you join the domain as any member, with **no additional
+identity or permission checks** — weigh the risks before running tasks that
+come from other agents.
 
 ## License
 
