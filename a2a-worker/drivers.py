@@ -50,9 +50,9 @@ def _extract(mode, raw):
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if obj.get("is_error"):
-                return raw.strip(), "is_error=true in structured output"
-            out = (obj.get("result") or obj.get("text") or "").strip()
+            if obj.get("is_error") or obj.get("ok") is False:  # vendor envelopes: claude / openclaw exec
+                return raw.strip(), "error flag in structured output"
+            out = (obj.get("result") or obj.get("text") or obj.get("final") or "").strip()
             if not out:  # {"result": ""} is an empty answer, not the whole envelope
                 return raw.strip(), "empty result in structured output"
             return out, None
@@ -62,7 +62,7 @@ def _extract(mode, raw):
 
 def run_command(driver_cfg, task, workspace, marker, cancel_event, expected):
     tid = task["id"]
-    ws = os.path.join(workspace, tid)
+    ws = os.path.abspath(os.path.join(workspace, tid))
     os.makedirs(ws, exist_ok=True)
     prompt = "\n".join(f"[{m['from']}] {m['text']}" for m in task["convo"])
     task_file = os.path.join(ws, "task.txt")
@@ -71,9 +71,9 @@ def run_command(driver_cfg, task, workspace, marker, cancel_event, expected):
     cmd = driver_cfg["cmd"].replace("{task_file}", task_file)  # NOT .format(): cmd may contain literal {} (JSON args)
     limit = expected
     try:
-        proc = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, shell=True, cwd=ws, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-                                start_new_session=(os.name != "nt"))
+                                start_new_session=(os.name != "nt"))  # cwd=task dir: files/ and out/ are relative
     except OSError as e:
         return {**FAIL_DRIVER, "fail_reason": "driver_error", "output": f"spawn failed: {e}"}
 

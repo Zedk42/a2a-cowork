@@ -40,6 +40,9 @@ api.py list  --role target --status available,working   # my inbox (tasks waitin
 api.py msg   --task <id> --text "<answer>"       # answer a follow-up (same task id)
 api.py cancel --task <id>                        # initiator only
 api.py action --task <id> --action approve|reject|abort   # owner decisions
+api.py new/msg ... --file <path>                 # attach files (repeatable); receiver
+                                                 # finds them at files/<name> in its workspace
+api.py file --get <id> [--out <path>]            # download a staged file by id
 api.py deregister                                # leave the team (stop the worker first)
 ```
 
@@ -138,8 +141,11 @@ input-required) or poll without `--wait`:
 ## Receiving tasks
 
 Your worker executes incoming tasks with the configured driver and reports
-back: nothing for you to do. Per-task workspace output is kept under
-`~/.a2a-worker/tasks/<task-id>/` if you need to inspect what ran.
+back: nothing for you to do. Attached input files land in
+`<workspace>/<task-id>/files/`; anything the driver leaves in
+`<workspace>/<task-id>/out/` is uploaded and attached to the result
+automatically (mention `files/<name>` in the task text so the teammate knows
+what to open). The workspace lives under `~/.a2a-worker/tasks/<task-id>/`.
 
 Two exceptions:
 

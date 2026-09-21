@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -78,24 +79,28 @@ def load_cfg():
     return cfg
 
 
-def api(cfg, method, path, body=None, timeout=65):
-    """Never raises on transport/protocol errors — returns (0, {...}) so the
-    loop can back off instead of crashing and orphaning a running driver."""
-    req = urllib.request.Request(cfg["server_url"] + path, method=method,
-                                 data=json.dumps(body).encode() if body is not None else None)
+def api(cfg, method, path, body=None, raw=False, data=None, timeout=65):
+    """Never raises on transport/protocol errors — returns (0, ...) so the loop
+    can back off instead of crashing and orphaning a running driver. raw=True
+    sends `data` bytes untouched and returns (status, bytes): file staging."""
+    payload = data if raw else (json.dumps(body).encode() if body is not None else None)
+    req = urllib.request.Request(cfg["server_url"] + path, method=method, data=payload)
     req.add_header("authorization", f"Bearer {cfg['domain_token']}")
+    req.add_header("x-agent-id", cfg["agent"]["id"])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = r.read()
-        return r.status, (json.loads(data) if data.strip() else {})
+            got = r.read()
+        return r.status, got if raw else (json.loads(got) if got.strip() else {})
     except urllib.error.HTTPError as e:
-        raw = e.read()
+        got = e.read()
+        if raw:
+            return e.code, got
         try:
-            return e.code, (json.loads(raw) if raw.strip() else {})
+            return e.code, (json.loads(got) if got.strip() else {})
         except json.JSONDecodeError:
             return e.code, {"error": "non-json response"}
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        return 0, {"error": str(e)}
+        return 0, str(e).encode() if raw else {"error": str(e)}
 
 
 def pid_alive(pid):
@@ -186,10 +191,12 @@ class Runner:
     def __init__(self, cfg, task, holder):
         holder[0] = self  # visible to the signal handler BEFORE the driver thread starts
         self.cfg, self.task = cfg, task
+        self.ws_root = os.path.expanduser(cfg.get("workspace_dir", "~/.a2a-worker/tasks"))
         self.lease = task["lease_id"]
         self.result = None
         self.reported = False
         self.drop = False
+        self.uploaded = {}   # outbox name -> staged file id; retries upload only what never landed
         self.cancel_event = threading.Event()
         self.finished = threading.Event()  # set when _run exits (driver cleaned up)
         self.driver_cfg = cfg.get("drivers", {}).get(cfg.get("default_driver", "command"), {})
@@ -200,16 +207,59 @@ class Runner:
             self.expected = min(task.get("timeout_seconds") or 3600, self.driver_cfg.get("timeout") or 3600)
         threading.Thread(target=self._run, daemon=True).start()
 
+    def _ws(self):
+        return os.path.abspath(os.path.join(self.ws_root, self.task["id"]))
+
+    def _fetch_files(self):
+        # materialize attached input files next to task.txt: <ws>/files/<name>
+        # (the server already sanitized the name at upload; the sha is verified
+        # so a corrupted staging write can never pose as the sent file)
+        import hashlib
+        fdir = os.path.join(self._ws(), "files")
+        os.makedirs(fdir, exist_ok=True)
+        for f in self.task.get("files") or []:
+            s2, data = api(self.cfg, "GET", f"/domains/{self.cfg['domain']}/files/{f['id']}", raw=True, timeout=300)
+            if s2 != 200:
+                raise RuntimeError(f"fetch {f['name']}: HTTP {s2}")
+            if hashlib.sha256(data).hexdigest() != f["sha256"]:
+                raise RuntimeError(f"sha256 mismatch on {f['name']}")
+            with open(os.path.join(fdir, f["name"]), "wb") as fh:
+                fh.write(data)
+
+    def collect_outbox(self):
+        """Upload driver-produced files from <ws>/out/; per-name ids cached so a
+        partial-failure retry uploads only what never landed. None = retry next
+        tick (the heartbeat keeps running either way)."""
+        out = os.path.join(self._ws(), "out")
+        for nm in sorted(os.listdir(out)) if os.path.isdir(out) else []:
+            fp = os.path.join(out, nm)
+            if not os.path.isfile(fp) or nm in self.uploaded:
+                continue
+            with open(fp, "rb") as fh:
+                s2, body = api(self.cfg, "POST",
+                               f"/domains/{self.cfg['domain']}/files?name={urllib.parse.quote(nm)}",
+                               raw=True, data=fh.read(), timeout=60)  # heartbeat thread: stay under online_timeout
+            if s2 != 200:
+                return None
+            self.uploaded[nm] = json.loads(body)["id"]
+        return list(self.uploaded.values())
+
     def _run(self):
         try:
+            if self.task.get("files"):
+                try:
+                    self._fetch_files()
+                except Exception as e:
+                    self.result = {"status": "failed", "fail_reason": "driver_error",
+                                   "output": f"input file fetch failed: {e}"}
+                    return
             if self.manual:  # wait for /report or timeout; no process is spawned
                 if not self.cancel_event.wait(self.expected) and self.result is None:
                     self.result = {"status": "failed", "fail_reason": "manual_expired",
                                    "output": "no manual report before timeout"}
                 return
             try:
-                res = drivers.run_command(self.driver_cfg, self.task,
-                                          os.path.expanduser(self.cfg.get("workspace_dir", "~/.a2a-worker/tasks")),
+                res = drivers.run_command(self.driver_cfg, self.task, self.ws_root,
                                           self.cfg.get("need_input_marker", r"^NEED_INPUT:"),
                                           self.cancel_event, self.expected)
             except Exception as e:
@@ -270,16 +320,23 @@ def loop(cfg, holder):
                 cur.reported = True
                 print(f"[worker] task {cur.task['id']} canceled, dropping", flush=True)
             else:
-                res = {k: v for k, v in cur.result.items() if v is not None}
-                s2, r2 = api(cfg, "POST", f"{base}/results", {"task_id": cur.task["id"], "lease_id": cur.lease, **res})
-                if s2 == 200:
-                    cur.reported = True
-                    print(f"[worker] task {cur.task['id']} -> {cur.result['status']}"
-                          + ("" if r2.get("accepted", True) else " (late_result, dropped)"), flush=True)
-                else:
-                    # short backoff only: the loop must keep polling (heartbeat)
+                fids = cur.collect_outbox()
+                if fids is None:  # upload trouble: retry next tick, heartbeat keeps running
                     time.sleep(min(backoff, cfg.get("busy_poll_interval", 5)))
                     backoff = min(backoff * 2, 30)
+                else:
+                    res = {k: v for k, v in cur.result.items() if v is not None}
+                    s2, r2 = api(cfg, "POST", f"{base}/results",
+                                 {"task_id": cur.task["id"], "lease_id": cur.lease, **res,
+                                  **({"files": fids} if fids else {})})
+                    if s2 == 200:
+                        cur.reported = True
+                        print(f"[worker] task {cur.task['id']} -> {cur.result['status']}"
+                              + ("" if r2.get("accepted", True) else " (late_result, dropped)"), flush=True)
+                    else:
+                        # short backoff only: the loop must keep polling (heartbeat)
+                        time.sleep(min(backoff, cfg.get("busy_poll_interval", 5)))
+                        backoff = min(backoff * 2, 30)
             if cur.reported:
                 cur = None
                 holder[0] = None

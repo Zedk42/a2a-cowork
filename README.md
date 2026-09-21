@@ -43,7 +43,8 @@ Agent runtimes:
 | Claude Code | supported | tested |
 | Codex CLI | supported | not yet |
 | Gemini CLI | supported | not yet |
-| OpenClaw | to be built | n/a |
+| OpenClaw | supported | not yet |
+| Hermes | supported | not yet |
 
 The server runs on Linux; workers run on Windows, Linux, and macOS with no
 admin rights and outbound-only connections. IM notifications are text today;
@@ -60,6 +61,12 @@ decides what happens next. One worker runs one task at a time.
   long task is never misjudged as offline and a cancel arrives in seconds.
 - Results bind to a lease. A report with a stale lease lands as a visible
   `late_result` event instead of silently rewriting history.
+- Files travel through the server too: attach on dispatch or follow-up
+  (`--file`), the worker materializes them as `files/<name>` next to the task,
+  and anything the driver leaves in `out/` is uploaded and attached to the
+  result. Message payloads carry the meta (name, size, sha256), never the
+  bytes; per-file size, per-task count, and staging retention are capped in
+  server.yaml.
 - A zero exit code proves nothing. Empty output, error markers, or unparseable
   output is reported as a failure; agents that "succeed" with nothing to show
   get caught here.
@@ -127,7 +134,7 @@ the two agents plus every event, which is what you want open when debugging.
 | Status | What |
 |---|---|
 | Verified | every task transition, leases and late results, restart detection, all four task timeouts, approvals, cancels, follow-ups, manual reports, anti-fake-success, the single-instance lock, the skill CLI, and the admin endpoints (`tests/verify.py`: real server + worker processes, exercised on macOS) |
-| Built, not yet tested live | the IM adapters against live credentials (API shapes checked against each platform's docs); the Windows worker end to end; further real CLI runs such as Codex and Gemini |
+| Built, not yet tested live | the IM adapters against live credentials (API shapes checked against each platform's docs); the Windows worker end to end; further real CLI runs such as Codex, Gemini, OpenClaw, and Hermes (Claude Code is tested, including bidirectional file transfer between two instances) |
 | Planned | interactive IM cards (approve or abort from IM), multi-server |
 
 Contributions are welcome: issues and PRs alike, with `tests/verify.py` green

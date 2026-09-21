@@ -3,7 +3,7 @@
 dependency is pyyaml.
 
 Reads connection info from worker.yaml next to this file (or A2A_WORKER_CONFIG).
-Commands: agents | new | get | list | cancel | msg | action | deregister
+Commands: agents | new | get | list | cancel | msg | action | file | deregister
 """
 import argparse
 import json
@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -43,15 +44,38 @@ def load():
     return cfg
 
 
-def call(cfg, method, path, body=None):
+def call(cfg, method, path, body=None, raw=False, data=None, timeout=60):
+    """raw=True sends `data` bytes untouched and returns (bytes, headers): file staging."""
     req = urllib.request.Request(cfg["server_url"] + path, method=method,
-                                 data=json.dumps(body).encode() if body is not None else None)
+                                 data=data if raw else (json.dumps(body).encode() if body is not None else None))
     req.add_header("authorization", f"Bearer {cfg['domain_token']}")
     if agent := cfg.get("agent", {}).get("id"):
         req.add_header("x-agent-id", agent)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        data = r.read()
-        return json.loads(data) if data else {}
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        got = r.read()
+        return (got, dict(r.headers)) if raw else (json.loads(got) if got else {})
+
+
+def upload_file(cfg, path):
+    with open(path, "rb") as f:
+        data = f.read()
+    body, _ = call(cfg, "POST", f"/domains/{cfg['domain']}/files?name="
+                   + urllib.parse.quote(os.path.basename(path)), raw=True, data=data, timeout=300)
+    return json.loads(body)
+
+
+def fetch_file(cfg, fid, out=None):
+    data, headers = call(cfg, "GET", f"/domains/{cfg['domain']}/files/{fid}", raw=True, timeout=300)
+    cd = headers.get("content-disposition", "")
+    if "filename*=" in cd:  # utf-8 encoded form (non-ascii names)
+        name = urllib.parse.unquote(cd.split("filename*=")[-1].split("''")[-1].strip('"'))
+    elif "filename=" in cd:
+        name = cd.split("filename=")[-1].strip('"')
+    else:
+        name = fid
+    with open(out or name, "wb") as f:
+        f.write(data)
+    return out or name
 
 
 TERMINAL = ("completed", "failed", "canceled")
@@ -62,10 +86,14 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("agents")
     p = sub.add_parser("new"); p.add_argument("--to", required=True); p.add_argument("--text", required=True); p.add_argument("--timeout", type=int)
+    p.add_argument("--file", action="append", help="attach a file (repeatable)")
     p = sub.add_parser("get"); p.add_argument("--task", required=True); p.add_argument("--wait", type=int, default=0, help="seconds to wait for a terminal state")
     p = sub.add_parser("list"); p.add_argument("--status"); p.add_argument("--role", choices=["initiator", "target"])
     p = sub.add_parser("cancel"); p.add_argument("--task", required=True)
     p = sub.add_parser("msg"); p.add_argument("--task", required=True); p.add_argument("--text", required=True)
+    p.add_argument("--file", action="append", help="attach a file (repeatable)")
+    p2 = sub.add_parser("file"); p2.add_argument("--get", required=True, help="download a staged file by id")
+    p2.add_argument("--out", default=None, help="local output path (default: stored name)")
     p = sub.add_parser("action"); p.add_argument("--task", required=True); p.add_argument("--action", required=True, choices=["approve", "reject", "abort"])
     p = sub.add_parser("deregister", help="leave the team (stop your worker first)")
     a = ap.parse_args()
@@ -76,7 +104,11 @@ def main():
             for x in call(cfg, "GET", f"/domains/{d}/agents"):
                 print(f"{'●' if x['online'] else '○'} {x['agent_id']:<24} {x['accept_policy']:<10} {x['default_driver']:<10} {x['description']}")
         elif a.cmd == "new":
-            print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks", {"target": a.to, "text": a.text, **({"timeout_seconds": a.timeout} if a.timeout else {})}), ensure_ascii=False))
+            ids = [upload_file(cfg, f)["id"] for f in (a.file or [])]  # upload_file returns parsed JSON
+            print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks",
+                                  {"target": a.to, "text": a.text,
+                                   **({"timeout_seconds": a.timeout} if a.timeout else {}),
+                                   **({"files": ids} if ids else {})}), ensure_ascii=False))
         elif a.cmd == "get":
             deadline = time.time() + a.wait
             while True:
@@ -97,7 +129,11 @@ def main():
         elif a.cmd == "cancel":
             print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks/{a.task}/cancel", {}), ensure_ascii=False))
         elif a.cmd == "msg":
-            print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks/{a.task}/messages", {"text": a.text}), ensure_ascii=False))
+            ids = [upload_file(cfg, f)["id"] for f in (a.file or [])]
+            print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks/{a.task}/messages",
+                                  {"text": a.text, **({"files": ids} if ids else {})}), ensure_ascii=False))
+        elif a.cmd == "file":
+            print(fetch_file(cfg, a.get, a.out))
         elif a.cmd == "action":
             print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks/{a.task}/action", {"action": a.action}), ensure_ascii=False))
         elif a.cmd == "deregister":

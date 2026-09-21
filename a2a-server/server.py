@@ -1,9 +1,9 @@
-import asyncio, json, os, re, time, uuid
+import asyncio, hashlib, json, os, re, time, uuid
 from pathlib import Path
 
 import yaml
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 import im_channels
 import notify
@@ -22,7 +22,7 @@ DEFAULTS = {
     "default_channel": "log", "public_base": "", "admin_token": "", "online_timeout": 90,
     "poll_wait": 30, "sweep_interval": 5, "dispatch_grace": 60, "agent_retention": 259200,
     "task_retention": 2592000, "approval_timeout": 1800, "input_required_timeout": 86400,
-    "default_task_timeout": 3600,
+    "default_task_timeout": 3600, "max_file_mb": 50, "max_files_per_task": 10,
 }
 
 def env_expand(v):
@@ -34,10 +34,11 @@ if not _cfg_path.exists():
     raise SystemExit(f"config not found: {_cfg_path} (copy server.example.yaml to server.yaml)")
 CFG = {**DEFAULTS, **yaml.safe_load(_cfg_path.read_text())}
 for _k in ("online_timeout", "poll_wait", "sweep_interval", "dispatch_grace", "agent_retention",
-           "task_retention", "approval_timeout", "input_required_timeout", "default_task_timeout"):
+           "task_retention", "approval_timeout", "input_required_timeout", "default_task_timeout",
+           "max_file_mb", "max_files_per_task"):
     _v = CFG[_k]
     if not isinstance(_v, (int, float)) or _v <= 0:  # e.g. "90s" strings silently kill the sweeper
-        raise SystemExit(f"config error: {_k} must be a positive number of seconds, got {_v!r}")
+        raise SystemExit(f"config error: {_k} must be a positive number, got {_v!r}")
 if CFG["poll_wait"] >= 60:
     raise SystemExit("config error: poll_wait must be < 60 — the worker's HTTP client gives up at 65s; "
                      "a longer suspend leaves dead-socket pollers that can lease tasks nobody receives")
@@ -71,6 +72,7 @@ if CFG["language"] not in notify.MESSAGES:
 CFG["public_base"] = str(CFG["public_base"] or "").rstrip("/")  # no doubled slash in notify links
 notify.set_lang(CFG["language"])
 DB = connect(CFG["db_path"])
+FILE_DIR = Path(CFG["db_path"]).parent / "files"  # staged transfer files; disk name is the uuid only
 WAITERS = {}  # (domain, agent_id) -> asyncio.Event, woken when work appears
 DEREGISTERED = {}  # (domain, agent_id) -> expiry: short tombstone so a live
 # worker's next poll gets 410 and exits instead of silently re-registering
@@ -220,12 +222,48 @@ async def fail_task(task, reason, to="both", output_head=None):
     return True
 
 
+def _safe_name(name):
+    name = re.sub(r"[\\/:\x00-\x1f]", "_", str(name)).strip() or "file"
+    return name[:200]
+
+
+def file_meta(f):
+    return {"id": f["id"], "name": f["name"], "size": f["size"], "sha256": f["sha256"]}
+
+
+def _claim_files(d, ids, task_id, enforce_cap=True):
+    """Attach uploaded files to a task: domain + existence checked, one task per
+    file, and the per-task count cap enforced. Returns the meta that travels in
+    the message payloads."""
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise ApiErr(400, "files must be a list of file ids")
+    uniq = list(dict.fromkeys(ids))
+    metas = []
+    for fid in uniq:
+        f = q1("SELECT * FROM files WHERE domain_id=? AND id=?", (d, fid))
+        if not f:
+            raise ApiErr(404, f"no file {fid[:8]}")
+        if f["task_id"] and f["task_id"] != task_id:
+            raise ApiErr(409, f"file {fid[:8]} already attached to another task")
+        metas.append(file_meta(f))
+    if enforce_cap:
+        have = q1("SELECT COUNT(*) c FROM files WHERE domain_id=? AND task_id=?", (d, task_id))["c"]
+        if have + len(uniq) > CFG["max_files_per_task"]:
+            raise ApiErr(400, f"too many files on one task (max {CFG['max_files_per_task']})")
+    for fid in uniq:
+        x("UPDATE files SET task_id=? WHERE id=?", (task_id, fid))
+    return metas
+
+
 # ---------- serialization ----------
 
 def task_json(t, convo=False):
     out = {k: t[k] for k in ("id", "initiator", "target", "text", "status", "fail_reason", "timeout_seconds")}
     out["created_at"] = iso(t["created_at"])
-    if convo:
+    if convo:  # detail view only: the list endpoint must not pay a files query per row
+        fs = q("SELECT * FROM files WHERE domain_id=? AND task_id=? ORDER BY created_at", (t["domain_id"], t["id"]))
+        if fs:
+            out["files"] = [file_meta(f) for f in fs]
         out["convo"] = [{**m, "at": iso(m["at"])} for m in json.loads(t["convo"])]
         out["events"] = [{**dict(r), "created_at": iso(r["created_at"])}
                          for r in q("SELECT seq,type,payload,created_at FROM task_events WHERE domain_id=? AND task_id=? ORDER BY seq", (t["domain_id"], t["id"]))]
@@ -342,15 +380,17 @@ async def list_agents(d, req: Request):
 
 # ---------- task lifecycle ----------
 
-async def create_task_core(d, initiator, target_id, text, timeout=None):
+async def create_task_core(d, initiator, target_id, text, timeout=None, files=None):
     target = require_agent(d, target_id)
     if not isinstance(text, str) or not text.strip():
         raise ApiErr(400, "text must be a non-empty string")
     if timeout is not None and not (isinstance(timeout, int) and timeout > 0):
         raise ApiErr(400, "timeout must be a positive int")
     tid, ts = uuid.uuid4().hex, now()
+    fmeta = _claim_files(d, files or [], tid)
     timeout = timeout or CFG["default_task_timeout"]
-    convo = json.dumps([{"from": initiator, "text": text, "at": ts}], ensure_ascii=False)
+    convo = json.dumps([{"from": initiator, "text": text, "at": ts, **({"files": fmeta} if fmeta else {})}],
+                       ensure_ascii=False)
     allow = target["accept_from"] == "all" or initiator in json.loads(target["accept_from"])
     if not allow:
         DB.execute("INSERT INTO tasks (id,domain_id,initiator,target,text,convo,timeout_seconds,"
@@ -384,9 +424,9 @@ async def create_task_core(d, initiator, target_id, text, timeout=None):
     return tid, "available"
 
 
-def followup_core(d, task, text):
+def followup_core(d, task, text, fmeta=None):
     convo = json.loads(task["convo"])
-    convo.append({"from": task["initiator"], "text": text, "at": now()})
+    convo.append({"from": task["initiator"], "text": text, "at": now(), **({"files": fmeta} if fmeta else {})})
     # guarded: only the first follow-up wins; a racing second one sees 0 rows and 409s
     if x("UPDATE tasks SET status='available', available_at=?, convo=?, ir_at=NULL WHERE id=? AND status='input-required'",
          (now(), json.dumps(convo, ensure_ascii=False), task["id"])) == 0:
@@ -422,7 +462,7 @@ async def create_task(d, req: Request):
     if not b.get("target") or not b.get("text"):
         raise ApiErr(400, "missing target/text")
     require_agent(d, initiator)
-    tid, status = await create_task_core(d, initiator, b["target"], b["text"], b.get("timeout_seconds"))
+    tid, status = await create_task_core(d, initiator, b["target"], b["text"], b.get("timeout_seconds"), b.get("files"))
     return JSONResponse({"task_id": tid, "status": status}, status_code=201)
 
 
@@ -468,7 +508,8 @@ async def followup(d, tid, req: Request):
         raise ApiErr(403, "not initiator")
     if not isinstance(b.get("text"), str) or not b["text"].strip():
         raise ApiErr(400, "text must be a non-empty string")
-    followup_core(d, task, b["text"])  # guarded UPDATE; races surface as 409 from the core
+    fmeta = _claim_files(d, b.get("files") or [], tid)
+    followup_core(d, task, b["text"], fmeta)  # guarded UPDATE; races surface as 409 from the core
     return {"status": "available"}
 
 
@@ -575,8 +616,10 @@ async def poll(d, aid, req: Request):
         t = q1("SELECT * FROM tasks WHERE id=?", (row["id"],))
         if a["default_driver_kind"] == "manual":  # kind, not the driver's name
             await notify_task(t, "manual_dispatch", to="target", summary=t["text"][:200])
+        fs = q("SELECT * FROM files WHERE domain_id=? AND task_id=? ORDER BY created_at", (d, row["id"]))
         return {"task": {"id": t["id"], "lease_id": lease, "text": t["text"], "initiator": t["initiator"],
-                         "timeout_seconds": t["timeout_seconds"], "convo": json.loads(t["convo"])}}
+                         "timeout_seconds": t["timeout_seconds"], "convo": json.loads(t["convo"]),
+                         "files": [file_meta(f) for f in fs]}}
 
     if (r := await deliver()) is not None:
         return r
@@ -614,9 +657,12 @@ async def results(d, aid, req: Request):
         return {"accepted": False, "reason": "late_result"}
     status = b.get("status")
     out_text = str(b.get("output") or "")  # never let a non-str poison slicing downstream
+    # no cap here: a task whose inputs fill the cap must still be reportable
+    fmeta = _claim_files(d, b.get("files") or [], task["id"], enforce_cap=False)
     if status == "completed":
         convo = json.loads(task["convo"])
-        convo.append({"from": aid, "text": out_text, "at": now()})  # result readable via task detail
+        convo.append({"from": aid, "text": out_text, "at": now(),
+                      **({"files": fmeta} if fmeta else {})})  # result + deliverables readable via task detail
         if x("UPDATE tasks SET status='completed', convo=?, finished_at=? WHERE id=? AND status IN ('dispatched','working')",
              (json.dumps(convo, ensure_ascii=False), now(), task["id"])) == 0:
             raise ApiErr(409, "task no longer running")
@@ -627,7 +673,8 @@ async def results(d, aid, req: Request):
         await fail_task(task, reason if isinstance(reason, str) and reason else "driver_error", output_head=out_text)
     elif status == "input-required":
         convo = json.loads(task["convo"])
-        convo.append({"from": aid, "text": b.get("question", ""), "at": now()})
+        convo.append({"from": aid, "text": b.get("question", ""), "at": now(),
+                      **({"files": fmeta} if fmeta else {})})
         x("UPDATE tasks SET status='input-required', ir_at=?, convo=? WHERE id=? AND status IN ('dispatched','working')",
           (now(), json.dumps(convo, ensure_ascii=False), task["id"]))
         DB.commit()
@@ -637,6 +684,57 @@ async def results(d, aid, req: Request):
         raise ApiErr(400, "bad status")
     wake(d, aid)
     return {"accepted": True}
+
+
+# ---------- file staging ----------
+
+@app.post("/domains/{d}/files")
+async def upload_file(d, req: Request, name=""):
+    """Raw-body upload; the response (and any task/result payload) carries the
+    meta: id, name, size, sha256. Bytes never travel inside task messages."""
+    domain_of(req, d)
+    who = req.headers.get("x-agent-id")
+    if not who:
+        raise ApiErr(403, "missing X-Agent-Id")
+    name = _safe_name(name)
+    cap = CFG["max_file_mb"] * 1024 * 1024
+    if (cl := req.headers.get("content-length") or "").isdigit() and int(cl) > cap:
+        raise ApiErr(413, f"file larger than {CFG['max_file_mb']}MB")
+    parts, total = [], 0
+    async for chunk in req.stream():  # chunked bodies bypass content-length: count bytes as they land
+        total += len(chunk)
+        if total > cap:
+            raise ApiErr(413, f"file larger than {CFG['max_file_mb']}MB")
+        parts.append(chunk)
+    body = b"".join(parts)
+    if not body:
+        raise ApiErr(400, "empty file")
+    fid, ts = uuid.uuid4().hex, now()
+    path = FILE_DIR / d / fid
+
+    def _store():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        return hashlib.sha256(body).hexdigest()
+
+    sha = await asyncio.to_thread(_store)  # big writes must not stall the loop
+    DB.execute("INSERT INTO files (id,domain_id,uploader,task_id,name,size,sha256,created_at) "
+               "VALUES (?,?,?,NULL,?,?,?,?)", (fid, d, who, name, len(body), sha, ts))
+    DB.commit()
+    return {"id": fid, "name": name, "size": len(body), "sha256": sha}
+
+
+@app.get("/domains/{d}/files/{fid}")
+async def download_file(d, fid, req: Request):
+    domain_of(req, d)
+    f = q1("SELECT * FROM files WHERE domain_id=? AND id=?", (d, fid))
+    if not f:
+        raise ApiErr(404, "no file")
+    path = FILE_DIR / d / fid
+    if not path.exists():
+        raise ApiErr(404, "file data expired")
+    return FileResponse(path, media_type="application/octet-stream", filename=f["name"],
+                        headers={"X-File-SHA256": f["sha256"]})  # size rides on Content-Length
 
 
 # ---------- sweeper ----------
@@ -681,6 +779,9 @@ async def sweep():
                 if not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (a["domain_id"], a["owner_username"])):
                     x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (a["domain_id"], a["owner_username"]))
                 drop_waiter(a["domain_id"], a["agent_id"])
+            for f in q("SELECT id, domain_id FROM files WHERE created_at < ?", (t - CFG["task_retention"],)):
+                (FILE_DIR / f["domain_id"] / f["id"]).unlink(missing_ok=True)
+            x("DELETE FROM files WHERE created_at < ?", (t - CFG["task_retention"],))
             DB.execute("DELETE FROM tasks WHERE finished_at IS NOT NULL AND finished_at < ?", (t - CFG["task_retention"],))
             DB.execute("DELETE FROM task_events WHERE created_at < ?", (t - CFG["task_retention"],))
             DB.execute("DELETE FROM approvals WHERE task_id NOT IN (SELECT id FROM tasks)")

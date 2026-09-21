@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS task_events (
   created_at REAL NOT NULL,
   PRIMARY KEY (domain_id, task_id, seq)
 );
+CREATE TABLE IF NOT EXISTS files (
+  id         TEXT PRIMARY KEY,
+  domain_id  TEXT NOT NULL,
+  uploader   TEXT NOT NULL,
+  task_id    TEXT,
+  name       TEXT NOT NULL,
+  size       INTEGER NOT NULL,
+  sha256     TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS approvals (
   task_id    TEXT PRIMARY KEY,
   domain_id  TEXT NOT NULL,

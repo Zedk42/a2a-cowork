@@ -34,6 +34,16 @@ drivers:
     cmd: 'codex exec --json -'
     timeout: 3600
     output: tail
+  openclaw:                  # one-shot embedded run, stdin prompt, JSON envelope (ok/status/final)
+    kind: command
+    cmd: 'openclaw agent exec --message-file - --json'
+    timeout: 3600
+    output: last_json
+  hermes:                    # scripted one-shot, plain text stdout; prompt comes from the task file
+    kind: command
+    cmd: 'hermes -z "$(cat {task_file})"'
+    timeout: 3600
+    output: tail
   any-cli:                   # template for other -p style CLIs (gemini/qwen/iflow/...)
     kind: command
     cmd: 'exit 1'            # fails loudly until you put the real CLI here (never fake-succeed)

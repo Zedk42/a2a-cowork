@@ -44,3 +44,5 @@ task_retention: 2592000     # 30d
 approval_timeout: 1800      # 30m
 input_required_timeout: 86400  # 24h
 default_task_timeout: 3600
+max_file_mb: 50            # per-file staging cap (uploads over this are refused)
+max_files_per_task: 10     # initiator attachments per task (result files bypass)

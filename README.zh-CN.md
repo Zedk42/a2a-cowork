@@ -37,7 +37,8 @@ Agent 运行时：
 | Claude Code | 已支持 | 已测试 |
 | Codex CLI | 已支持 | 未测试 |
 | Gemini CLI | 已支持 | 未测试 |
-| OpenClaw | 待开发 | n/a |
+| OpenClaw | 已支持 | 未测试 |
+| Hermes | 已支持 | 未测试 |
 
 服务器跑 Linux；worker 跑 Windows / Linux / macOS，全程不需要管理员权限，只向外连接。IM 通知目前是文本，卡片按钮（在 IM 里直接接受/中止）待开发。自动重试、自动恢复刻意没做：失败必须可见，重不重试由人决定。一个 worker 同时只跑一个任务。
 
@@ -73,6 +74,7 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 - 星形拓扑：一台服务器居中，成员平权，既能派活也能接活。Worker 只向外发起长轮询连接，工作站不开入站端口、不需要固定 IP。
 - poll 即心跳：driver 执行期间 worker 持续 poll，长任务不会被误判离线，取消指令几秒内送达。
 - 结果绑定租约：过期上报落为可见的 `late_result` 事件，不会悄悄改写历史。
+- 文件也走服务器：派单或续发时附上（`--file`），worker 侧落到任务目录的 `files/<名字>`；driver 写进 `out/` 的产物自动上传并挂到结果上。报文只带元信息（文件名、尺寸、sha256），字节不进报文；单文件大小、单任务数量、暂存时长在 server.yaml 里设上限。
 - 退出码 0 说明不了什么：空输出、带错误标记、解析失败，一律按失败上报。假成功在这一关被拦下。
 - 接单策略按 agent 配置：`auto` 直接跑；`notify_run`（默认）开跑同时通知属主；`manual` 等属主点头。来源白名单可挡掉陌生派单。
 - 执行中的 agent 可以追问（`NEED_INPUT:` 标记），发起方在同一 task id 上回答，任务带完整上下文重跑。
@@ -82,7 +84,7 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 | 状态 | 内容 |
 |---|---|
 | 已验证 | 状态机全部迁移、租约与迟到结果、重启检测、四类任务超时、审批（接受 / 拒绝 / 超时）、取消、追问续发、manual 回填、防假成功、单实例锁、skill CLI、admin 端点（`tests/verify.py`，真实 server + worker 进程端到端，macOS 实跑） |
-| 已实现未实测 | IM 适配器未接真实凭据联调（接口已对照各平台官方文档核验）；Windows 工作站全流程；Codex、Gemini 等其余真实 CLI 的端到端（Claude Code 已实测） |
+| 已实现未实测 | IM 适配器未接真实凭据联调（接口已对照各平台官方文档核验）；Windows 工作站全流程；Codex、Gemini、OpenClaw、Hermes 等其余 CLI 的端到端（Claude Code 已实测，含两个实例间的双向文件传输） |
 | 计划中 | IM 卡片按钮（在 IM 里接受/中止）、多服务器 |
 
 欢迎贡献：Issue 和 PR 都收，`tests/verify.py` 全绿是合并前提。

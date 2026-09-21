@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -129,6 +130,22 @@ def report(aid, tid, lease, status, **extra):
                 {"task_id": tid, "lease_id": lease, "status": status, **extra})
 
 
+def upload(name, data, agent="boss"):
+    r = urllib.request.Request(f"http://127.0.0.1:{PORT}/domains/team-a/files?name={urllib.parse.quote(name)}",
+                               data=data, method="POST")
+    r.add_header("authorization", f"Bearer {TOKEN}")
+    r.add_header("x-agent-id", agent)
+    with urllib.request.urlopen(r, timeout=15) as x:
+        return json.loads(x.read())
+
+
+def fetch(fid):
+    r = urllib.request.Request(f"http://127.0.0.1:{PORT}/domains/team-a/files/{fid}")
+    r.add_header("authorization", f"Bearer {TOKEN}")
+    with urllib.request.urlopen(r, timeout=15) as x:
+        return x.read(), x.headers.get("X-File-SHA256")
+
+
 def new_task(target, text, initiator="boss"):
     s, r = call("POST", "/domains/team-a/tasks", {"target": target, "text": text}, agent=initiator)
     assert s == 201, (s, r)
@@ -227,6 +244,59 @@ def server_checks():
              if e["type"] == "notify"]
     check("whitelist/source_not_allowed", f.get("fail_reason") == "source_not_allowed" and "notify" in events(tid), f)
     check("public_base/no-double-slash", links and all("//domains" not in p for p in links), links)
+
+    # ---------- file staging: meta in payloads, caps, retention ----------
+    fu = upload("notes.txt", b"hello-file-42")
+    check("files/upload-meta", fu["name"] == "notes.txt" and fu["size"] == 13 and len(fu["sha256"]) == 64, fu)
+    try:
+        upload("big.bin", b"x" * (1024 * 1024 + 1))  # cap is 1MB in this suite's config
+        check("files/size-cap", False, "oversize accepted")
+    except urllib.error.HTTPError as e:
+        check("files/size-cap", e.code == 413, e.code)
+    except urllib.error.URLError as e:
+        check("files/size-cap", "Broken pipe" in str(e), e)  # server refused early, connection reset mid-send
+    tid = call("POST", "/domains/team-a/tasks", {"target": "w", "text": "with file", "files": [fu["id"]]},
+               agent="boss")[1]["task_id"]
+    _, d = poll("w")
+    check("files/poll-meta", d["task"]["files"][0]["name"] == "notes.txt" and d["task"]["files"][0]["size"] == 13,
+          d["task"].get("files"))
+    report("w", tid, d["task"]["lease_id"], "completed", output="done")
+    det = call("GET", f"/domains/team-a/tasks/{tid}")[1]
+    check("files/task-json", det["files"][0]["id"] == fu["id"] and det["convo"][0]["files"][0]["name"] == "notes.txt",
+          det.get("files"))
+    body, sha = fetch(fu["id"])
+    check("files/download", body == b"hello-file-42" and sha == fu["sha256"], sha)
+    # follow-up and result attachments both carry meta in the convo
+    tid = new_task("w", "ask")
+    _, d = poll("w")
+    report("w", tid, d["task"]["lease_id"], "input-required", question="need data")
+    fu2 = upload("data.csv", b"a,b\n1,2\n")
+    call("POST", f"/domains/team-a/tasks/{tid}/messages", {"text": "here", "files": [fu2["id"]]}, agent="boss")
+    _, d = poll("w")
+    fu3 = upload("result.zip", b"PK-data")
+    report("w", tid, d["task"]["lease_id"], "completed", output="done", files=[fu3["id"]])
+    det = call("GET", f"/domains/team-a/tasks/{tid}")[1]
+    check("files/attach-meta", det["convo"][2]["files"][0]["name"] == "data.csv"
+          and det["convo"][3]["files"][0]["name"] == "result.zip" and len(det["files"]) == 2, det.get("files"))
+    # per-task count cap (3 in this suite's config) applies to initiator attachments...
+    ids = [upload(f"f{i}.txt", b"x")["id"] for i in range(4)]
+    s_cap, r_cap = call("POST", "/domains/team-a/tasks", {"target": "w", "text": "cap", "files": ids}, agent="boss")
+    check("files/count-cap", s_cap == 400, (s_cap, r_cap))
+    # ...but a task already at the cap must still accept the worker's result files
+    tid = call("POST", "/domains/team-a/tasks", {"target": "w", "text": "cap-fill", "files": ids[:3]},
+               agent="boss")[1]["task_id"]
+    _, d = poll("w")
+    extra = upload("res.txt", b"r")
+    s_res, r_res = report("w", tid, d["task"]["lease_id"], "completed", output="ok", files=[extra["id"]])
+    check("files/result-over-cap", r_res.get("accepted") is True, (s_res, r_res))
+    # retention sweep removes db row + staged bytes
+    gone = upload("gone.txt", b"bye")
+    sql("UPDATE files SET created_at=? WHERE id=?", (time.time() - 400, gone["id"]))
+    end = time.time() + 12
+    while time.time() < end and q1("SELECT 1 FROM files WHERE id=?", (gone["id"],)):
+        time.sleep(0.5)
+    check("files/retention", not q1("SELECT 1 FROM files WHERE id=?", (gone["id"],))
+          and not os.path.exists(os.path.join(SCRATCH, "files", "team-a", gone["id"])))
 
     # isolation + input validation at the trust boundary
     check("isolation/wrong-domain-token", call("GET", "/domains/team-b/agents")[0] == 401)
@@ -465,6 +535,20 @@ def worker_checks():
     det = wait_status(new_task("wk", "ask"), "input-required")
     check("worker/need-input-marker", det["status"] == "input-required" and "branch" in json.dumps(det["convo"]), det)
 
+    # file roundtrip with a real worker: input materialized to files/, outbox uploaded back
+    w.stop()
+    w = Worker("wk", "{kind: command, cmd: 'mkdir -p out && cp files/in.txt out/copied.txt && cat files/in.txt', timeout: 60, output: tail}", home)
+    w.wait_online()
+    fid = upload("in.txt", b"roundtrip-payload-7")["id"]
+    tid = call("POST", "/domains/team-a/tasks",
+               {"target": "wk", "text": "process the attached file", "files": [fid]}, agent="boss")[1]["task_id"]
+    det = wait_status(tid, "completed", timeout=30)
+    rid = next((f["id"] for f in det.get("files", []) if f["name"] == "copied.txt"), None)
+    check("worker/file-roundtrip", det["convo"][-1]["text"].strip() == "roundtrip-payload-7" and rid, det.get("files"))
+    if rid:
+        got, _ = fetch(rid)
+        check("worker/outbox-download", got == b"roundtrip-payload-7", got[:30])
+
     # a long task survives past online_timeout (poll is the heartbeat), then cancel kills the driver
     w.stop()
     pidfile = os.path.join(SCRATCH, "cancel.pid")
@@ -572,6 +656,8 @@ task_retention: 300
 approval_timeout: 3
 input_required_timeout: 5
 default_task_timeout: 60
+max_file_mb: 1
+max_files_per_task: 3
 """)
     srv = subprocess.Popen([venv_python(SRV), "server.py"], cwd=SRV,
                            env={**os.environ, "A2A_SERVER_CONFIG": cfg},
