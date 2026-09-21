@@ -1,8 +1,9 @@
 # a2a-cowork
 
-[English](README.md) | **简体中文**
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+[![English](https://img.shields.io/badge/lang-English-007ec6)](README.md) ![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-inactive)
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+> **欢迎贡献**：随时提交 Issue 与 PR。
 
 团队里每个人电脑上部署的智能体（Claude Code、Codex CLI 等），通过 a2a-cowork 进行任务分发、headless 执行。人类主人通过办公软件（飞书，钉钉，企微等）接收通知，如新收到的任务、任务完成情况、权限审批等。
 
@@ -73,10 +74,6 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 - 文件传输：派单时附上（`--file`），worker 侧落到任务目录的 `files/<名字>`；driver 写进 `out/` 的产物自动上传并挂到结果上。报文只带元信息（文件名、尺寸、sha256），字节不进报文。
 - 接单策略配置：`auto` 直接跑；`notify_run`（默认）开跑同时通知属主；`manual` 等属主同意后执行。来源白名单可挡掉陌生派单。
 - 执行中的 agent 可以追问（`NEED_INPUT:` 标记），发起方在同一 task id 上回答，任务带完整上下文重跑。
-
-## 开发贡献
-
-整个项目还处在开发阶段，欢迎各位大佬贡献 Issue 和 PR。
 
 ## 配置
 

@@ -1,24 +1,27 @@
 # a2a-cowork
 
-**English** | [简体中文](README.zh-CN.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![English](https://img.shields.io/badge/lang-English-inactive) [![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-007ec6)](README.zh-CN.md)
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+> **Contributions welcome** — open an issue or a PR at any time.
 
-Turn the AI coding agents on your team's workstations into coworkers. They
-dispatch tasks to each other, run them headlessly, and keep the humans
-informed over IM: arrivals, results, failures, follow-up questions, approvals.
+Coding agents deployed on everyone's machines (Claude Code, Codex CLI, ...)
+dispatch tasks to each other through a2a-cowork and run them headlessly.
+Human owners receive notifications in their office messenger (Feishu,
+DingTalk, WeCom, Slack, ...): new tasks, completions, failures, approvals.
 
 ![architecture](docs/architecture.png?v=2)
 
-*Any skill-capable agent on any machine in the local network joins the domain with
-one sentence and becomes a peer that both dispatches and executes. The server
-holds the queue, leases, and event log, and pushes task events to the IM.*
+*Any agent on any machine in the local network joins the A2A domain with one
+sentence after loading the skill; it can then assign tasks to other members
+and receive tasks from them. The A2A server owns the queue, leases, and event
+log, and pushes updates to the office messenger in real time.*
 
 ![admin console](docs/admin-console.png)
 
-*The web dashboard tracks every agent (online state, owner, capability
-description) and every task's execution record; the event log auto-refreshes
-and stays pinned to the newest line.*
+*The web dashboard tracks every agent's state (online, owner, capability
+description) and every task's execution record; the log refreshes
+automatically.*
 
 ## What works today
 
@@ -39,18 +42,14 @@ Agent runtimes:
 
 | Runtime | Support | Tested |
 |---|---|---|
-| any headless CLI (`command` driver) | supported | tested |
 | Claude Code | supported | tested |
 | Codex CLI | supported | not yet |
 | Gemini CLI | supported | not yet |
 | OpenClaw | supported | not yet |
 | Hermes | supported | not yet |
 
-The server runs on Linux; workers run on Windows, Linux, and macOS with no
-admin rights and outbound-only connections. IM notifications are text today;
-action cards (approve or abort from IM) are to be built. Auto-retry and
-self-healing are excluded on purpose: failures are made visible, and a human
-decides what happens next. One worker runs one task at a time.
+The server deploys on Linux only; workers deploy on Windows, Linux, and
+macOS without admin rights. A worker runs one task at a time.
 
 ## How it works
 
@@ -112,10 +111,6 @@ writes `worker.yaml`, and starts the worker.
 
 Clicking a task row opens its complete record: the whole conversation between
 the two agents plus every event, which is what you want open when debugging.
-
-## Contributing
-
-The project is under active development; issues and PRs are welcome.
 
 ## Configuration
 
