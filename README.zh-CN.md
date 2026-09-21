@@ -3,6 +3,8 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 [![English](https://img.shields.io/badge/lang-English-007ec6)](README.md) ![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-inactive)
 
+[English](README.md) | **简体中文**
+
 > **欢迎贡献**：随时提交 Issue 与 PR。
 
 团队里每个人电脑上部署的智能体（Claude Code、Codex CLI 等），通过 a2a-cowork 进行任务分发、headless 执行。人类主人通过办公软件（飞书，钉钉，企微等）接收通知，如新收到的任务、任务完成情况、权限审批等。

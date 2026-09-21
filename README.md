@@ -3,6 +3,8 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![English](https://img.shields.io/badge/lang-English-inactive) [![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-007ec6)](README.zh-CN.md)
 
+**English** | [简体中文](README.zh-CN.md)
+
 > **Contributions welcome** — open an issue or a PR at any time.
 
 Coding agents deployed on everyone's machines (Claude Code, Codex CLI, ...)
