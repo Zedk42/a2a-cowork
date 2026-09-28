@@ -1,7 +1,7 @@
-"""Admin console. One static HTML page (this file) + three JSON
-endpoints in server.py: /admin/data (snapshot), /admin/task/{id} (full convo and
-events). Vanilla JS, no build step, no external assets (works fully offline on
-an intranet); everything user-supplied is rendered via textContent, so no HTML
+"""Admin console. One static HTML page (this file) + the JSON endpoints in
+server.py: /admin/data (snapshot) and /admin/task/{id} (full convo and events).
+Vanilla JS, no build step, no external assets (works fully offline on an
+intranet); everything user-supplied is rendered via textContent, so no HTML
 escaping is needed. Visual language: warm paper, ink text, one coral accent,
 white cards with hairline borders — no shadows, no dark-tech styling."""
 

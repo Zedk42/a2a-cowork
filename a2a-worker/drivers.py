@@ -7,6 +7,7 @@ Anti-fake-success: rc=0 with empty / error-marked / unparseable output is a
 failure, not a success.
 kind=manual:  handled by worker core (waits for `a2a-worker report`), not here.
 """
+import collections
 import json
 import os
 import re
@@ -60,16 +61,14 @@ def _extract(mode, raw):
     return raw.strip()[-32000:], None  # tail
 
 
-def run_command(driver_cfg, task, workspace, marker, cancel_event, expected):
-    tid = task["id"]
-    ws = os.path.abspath(os.path.join(workspace, tid))
+def run_command(driver_cfg, task, ws, marker, cancel_event, expected):
+    # ws = the task's own directory (Runner._ws()); cwd for the driver, files/ and out/ relative to it
     os.makedirs(ws, exist_ok=True)
     prompt = "\n".join(f"[{m['from']}] {m['text']}" for m in task["convo"])
     task_file = os.path.join(ws, "task.txt")
     with open(task_file, "w", encoding="utf-8") as f:  # utf-8, never BOM
         f.write(prompt)
     cmd = driver_cfg["cmd"].replace("{task_file}", task_file)  # NOT .format(): cmd may contain literal {} (JSON args)
-    limit = expected
     try:
         proc = subprocess.Popen(cmd, shell=True, cwd=ws, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
@@ -85,12 +84,21 @@ def run_command(driver_cfg, task, workspace, marker, cancel_event, expected):
             pass
 
     out = []
-    t_out = threading.Thread(target=lambda: out.append(proc.stdout.read() or ""), daemon=True)
-    t_in = threading.Thread(target=feed_stdin, daemon=True)
-    t_out.start()
-    t_in.start()
 
-    deadline = time.time() + limit
+    def drain():  # bounded ~1MB tail of whole lines; one newline-less giant line still buffers whole
+        tail, size = collections.deque(), 0
+        for line in iter(proc.stdout.readline, ""):
+            tail.append(line)
+            size += len(line)
+            if size > 1_048_576:
+                size -= len(tail.popleft())
+        out.append("".join(tail))
+
+    t_out = threading.Thread(target=drain, daemon=True)
+    t_out.start()
+    threading.Thread(target=feed_stdin, daemon=True).start()
+
+    deadline = time.time() + expected
     timed_out = False
     while proc.poll() is None:
         if cancel_event.wait(0.3):

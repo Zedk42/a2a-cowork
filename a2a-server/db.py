@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   dispatched_at    REAL,
   started_at       REAL,
   ir_at            REAL,
-  finished_at      REAL
+  finished_at      REAL,
+  approval_expires_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_target ON tasks(domain_id, target, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_init   ON tasks(domain_id, initiator, status);
@@ -68,13 +69,6 @@ CREATE TABLE IF NOT EXISTS files (
   size       INTEGER NOT NULL,
   sha256     TEXT NOT NULL,
   created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS approvals (
-  task_id    TEXT PRIMARY KEY,
-  domain_id  TEXT NOT NULL,
-  state      TEXT NOT NULL,
-  expires_at REAL NOT NULL,
-  decided_at REAL
 );
 """
 

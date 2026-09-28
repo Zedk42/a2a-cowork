@@ -1,5 +1,5 @@
 # A2A Server config. All durations are seconds. Copy to server.yaml and edit.
-# Tokens and credentials support ${ENV_VAR} expansion.
+# All string values support ${ENV_VAR} expansion.
 host: 0.0.0.0
 port: 8100
 language: zh            # zh | en (add a dict in notify.py MESSAGES for more)
@@ -45,4 +45,5 @@ approval_timeout: 1800      # 30m
 input_required_timeout: 86400  # 24h
 default_task_timeout: 3600
 max_file_mb: 50            # per-file staging cap (uploads over this are refused)
-max_files_per_task: 10     # initiator attachments per task (result files bypass)
+max_files_per_task: 10     # files attachable at dispatch (follow-up and result files bypass)
+max_body_mb: 2             # cap on any JSON request body (task text, outputs, questions)

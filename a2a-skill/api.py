@@ -28,7 +28,7 @@ def load():
     p = next((c for c in cands if c.is_file()), None)
     if not p:
         sys.exit("no worker.yaml found (looked in $A2A_WORKER_CONFIG, here, ../a2a-worker, "
-                 "and ~/a2a-cowork/a2a-worker); run onboarding per SKILL.md first")
+                 "~/a2a-worker, and ~/a2a-cowork/a2a-worker); run onboarding per SKILL.md first")
     def expand(v):
         if isinstance(v, str):
             return os.path.expandvars(v)
@@ -53,7 +53,7 @@ def call(cfg, method, path, body=None, raw=False, data=None, timeout=60):
         req.add_header("x-agent-id", agent)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         got = r.read()
-        return (got, dict(r.headers)) if raw else (json.loads(got) if got else {})
+        return (got, r.headers) if raw else (json.loads(got) if got else {})
 
 
 def upload_file(cfg, path):
@@ -66,13 +66,7 @@ def upload_file(cfg, path):
 
 def fetch_file(cfg, fid, out=None):
     data, headers = call(cfg, "GET", f"/domains/{cfg['domain']}/files/{fid}", raw=True, timeout=300)
-    cd = headers.get("content-disposition", "")
-    if "filename*=" in cd:  # utf-8 encoded form (non-ascii names)
-        name = urllib.parse.unquote(cd.split("filename*=")[-1].split("''")[-1].strip('"'))
-    elif "filename=" in cd:
-        name = cd.split("filename=")[-1].strip('"')
-    else:
-        name = fid
+    name = headers.get_filename() or fid  # HTTPMessage: parses filename= and filename*= forms
     with open(out or name, "wb") as f:
         f.write(data)
     return out or name
@@ -137,7 +131,8 @@ def main():
         elif a.cmd == "action":
             print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks/{a.task}/action", {"action": a.action}), ensure_ascii=False))
         elif a.cmd == "deregister":
-            call(cfg, "POST", f"/domains/{d}/agents/{cfg['agent']['id']}/deregister")
+            aid = (cfg.get("agent") or {}).get("id") or sys.exit("worker.yaml has no agent.id — nothing to deregister")
+            call(cfg, "POST", f"/domains/{d}/agents/{aid}/deregister")
             print("deregistered")
     except urllib.error.HTTPError as e:
         print(e.read().decode() or str(e), file=sys.stderr)

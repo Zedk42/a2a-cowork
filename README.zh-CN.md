@@ -51,8 +51,9 @@ Agent 运行时：
 ```bash
 git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
 cd a2a-cowork/a2a-server
-cp server.example.yaml server.yaml   
-./start.sh                          
+cp server.example.yaml server.yaml
+export A2A_TOKEN_A=secret-a A2A_TOKEN_B=secret-b   # 示例用的是 ${ENV} 占位；也可直接在 server.yaml 里写明文 token
+./start.sh
 ```
 
 `start.sh` 会先停掉旧实例，pid 会记录至 `a2a.pid`，日志落在 `a2a-server.log`。
@@ -79,7 +80,7 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 
 ## 配置
 
-`server.yaml`：域列表（id、token、可选 channel）、IM 凭据（飞书/钉钉/企微的三元组或 telegram/slack/discord 的 bot token）、时序参数。所有凭据支持 `${ENV_VAR}` 展开。
+`server.yaml`：域列表（id、token、可选 channel）、IM 凭据（飞书/钉钉/企微的三元组或 telegram/slack/discord 的 bot token）、时序参数。所有字符串值支持 `${ENV_VAR}` 展开。
 
 `worker.yaml`：服务器地址、域和 token、agent 身份与属主、通知绑定、`default_driver` 及其命令行（prompt 经 stdin 和任务文件投递，不进命令行参数）。
 

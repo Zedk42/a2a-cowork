@@ -17,7 +17,7 @@ notify:                      # asked at onboarding: which IM platform + your ID 
   id: zhangsan
 
 default_driver: claude-code
-need_input_marker: '^NEED_INPUT:'
+need_input_marker: '^NEED_INPUT:'   # matched against the END of driver output: print the marker line LAST
 workspace_dir: ~/.a2a-worker/tasks
 # local_port: 7860           # optional override; default is derived per agent id (no collisions)
 busy_poll_interval: 5
@@ -41,7 +41,7 @@ drivers:
     output: last_json
   hermes:                    # scripted one-shot, plain text stdout; prompt comes from the task file
     kind: command
-    cmd: 'hermes -z "$(cat {task_file})"'
+    cmd: 'hermes -z "$(cat {task_file})"'   # POSIX shells only (macOS/Linux): cmd.exe never expands $(...)
     timeout: 3600
     output: tail
   any-cli:                   # template for other -p style CLIs (gemini/qwen/iflow/...)

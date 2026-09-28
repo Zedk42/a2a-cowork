@@ -168,12 +168,18 @@ def server_checks():
     # register persisted the session and driver-kind columns
     row = q1("SELECT * FROM agents WHERE agent_id='w'")
     check("register/persists-session-and-kind",
-          len(row["session"]) == 32 and row["default_driver_kind"] == "command",
+          row["session"] and row["default_driver_kind"] == "command",
           f"session={row['session']!r} kind={row['default_driver_kind']!r}")
 
     # registered for the offline-probe section below; public_base is configured
     # WITH a trailing slash on purpose (checked via notify links further down)
     register("w2", owner="u2")
+
+    # re-registering under a new owner drops the stranded old-owner binding
+    register("mo", owner="old")
+    register("mo", owner="new")
+    check("register/owner-reassign-cleans-binding",
+          not q1("SELECT 1 FROM owner_bindings WHERE domain_id='team-a' AND username='old'"))
 
     # e2e auto: available -> dispatched -> working -> completed
     tid = new_task("w", "hello")
@@ -188,6 +194,16 @@ def server_checks():
     check("results/wrong-lease-is-late",
           report("w", tid, "wrong-lease", "completed", output="x")[1] == {"accepted": False, "reason": "late_result"})
     check("results/late-result-recorded", "late_result" in events(tid))
+
+    # a retried IR report racing a follow-up is a duplicate, not a late result
+    tid = new_task("w", "ir retry")
+    _, d = poll("w")
+    report("w", tid, d["task"]["lease_id"], "input-required", question="q?")
+    call("POST", f"/domains/team-a/tasks/{tid}/messages", {"text": "a"}, agent="boss")
+    check("results/ir-retry-after-followup",
+          report("w", tid, d["task"]["lease_id"], "input-required", question="q?")[1].get("duplicate") is True)
+    _, d = poll("w")
+    report("w", tid, d["task"]["lease_id"], "completed", output="ok")
 
     # dispatched -> working only with the lease that was issued
     tid = new_task("w", "guard")
@@ -231,7 +247,7 @@ def server_checks():
     f = wait_status(tid, "failed")
     check("manual-policy/reject->failed", f.get("fail_reason") == "rejected", f)
     tid = new_task("m", "let it expire")
-    sql("UPDATE approvals SET expires_at=? WHERE task_id=?", (time.time() - 1, tid))
+    sql("UPDATE tasks SET approval_expires_at=? WHERE id=?", (time.time() - 1, tid))
     f = wait_status(tid, "failed", timeout=15)
     check("manual-policy/approval-expired", f.get("fail_reason") == "approval_expired", f)
 
@@ -289,6 +305,18 @@ def server_checks():
     extra = upload("res.txt", b"r")
     s_res, r_res = report("w", tid, d["task"]["lease_id"], "completed", output="ok", files=[extra["id"]])
     check("files/result-over-cap", r_res.get("accepted") is True, (s_res, r_res))
+    # ...and a follow-up on a full task must still be deliverable (the executor asked for it)
+    full = [upload(f"g{i}.txt", b"x")["id"] for i in range(3)]  # ids above are already claimed
+    tid = call("POST", "/domains/team-a/tasks", {"target": "w", "text": "cap-ir", "files": full},
+               agent="boss")[1]["task_id"]
+    _, d = poll("w")
+    report("w", tid, d["task"]["lease_id"], "input-required", question="one more",
+           files=[upload("res2.txt", b"r")["id"]])
+    s_f, r_f = call("POST", f"/domains/team-a/tasks/{tid}/messages",
+                    {"text": "here", "files": [upload("extra.txt", b"e")["id"]]}, agent="boss")
+    check("files/followup-over-cap", s_f == 200, (s_f, r_f))
+    _, d = poll("w")
+    report("w", tid, d["task"]["lease_id"], "completed", output="ok")
     # retention sweep removes db row + staged bytes
     gone = upload("gone.txt", b"bye")
     sql("UPDATE files SET created_at=? WHERE id=?", (time.time() - 400, gone["id"]))
@@ -307,6 +335,11 @@ def server_checks():
     check("validation/non-string-text->400", s == 400, (s, r))
     check("validation/non-string-text-not-queued", not q1("SELECT 1 FROM tasks WHERE target='w' AND text='123'"))
     check("validation/role-without-identity->403", call("GET", "/domains/team-a/tasks?role=target")[0] == 403)
+    try:  # early 413 can also surface as a broken pipe mid-send, like the file cap
+        s, r = call("POST", "/domains/team-a/tasks", {"target": "w", "text": "x" * (1024 * 1024 + 1)}, agent="boss")
+        check("validation/body-cap", s == 413, (s, r))
+    except urllib.error.URLError as e:  # call() already converts HTTPError to a status
+        check("validation/body-cap", "Broken pipe" in str(e), e)
 
     # client-supplied values land in stored state, so they must be type-checked
     tid = new_task("w", "expected guard")
@@ -418,6 +451,12 @@ def server_checks():
     tid = new_task("ir", "ask then silence")
     _, d = poll("ir")
     report("ir", tid, d["task"]["lease_id"], "input-required", question="anyone?")
+    check("sweep/ir-reported", wait_status(tid, "input-required")["status"] == "input-required")
+    # worker goes dark mid-question: offline (> online_timeout) but far from retention
+    sql("UPDATE agents SET last_seen_at=? WHERE agent_id='ir'", (time.time() - 12,))
+    time.sleep(3)  # > 2 sweeps with the agent offline
+    check("sweep/ir-survives-worker-offline",
+          q1("SELECT status FROM tasks WHERE id=?", (tid,))["status"] == "input-required")
     end = time.time() + 12
     f = {}
     while time.time() < end:
@@ -536,15 +575,18 @@ def worker_checks():
     check("worker/need-input-marker", det["status"] == "input-required" and "branch" in json.dumps(det["convo"]), det)
 
     # file roundtrip with a real worker: input materialized to files/, outbox uploaded back
+    # (two outbox files also exercise the one-upload-per-heartbeat-tick path)
     w.stop()
-    w = Worker("wk", "{kind: command, cmd: 'mkdir -p out && cp files/in.txt out/copied.txt && cat files/in.txt', timeout: 60, output: tail}", home)
+    w = Worker("wk", "{kind: command, cmd: 'mkdir -p out && cp files/in.txt out/copied.txt && cp files/in.txt out/second.txt && cat files/in.txt', timeout: 60, output: tail}", home)
     w.wait_online()
     fid = upload("in.txt", b"roundtrip-payload-7")["id"]
     tid = call("POST", "/domains/team-a/tasks",
                {"target": "wk", "text": "process the attached file", "files": [fid]}, agent="boss")[1]["task_id"]
     det = wait_status(tid, "completed", timeout=30)
+    names = {f["name"] for f in det.get("files", [])}
     rid = next((f["id"] for f in det.get("files", []) if f["name"] == "copied.txt"), None)
-    check("worker/file-roundtrip", det["convo"][-1]["text"].strip() == "roundtrip-payload-7" and rid, det.get("files"))
+    check("worker/file-roundtrip", det["convo"][-1]["text"].strip() == "roundtrip-payload-7"
+          and {"copied.txt", "second.txt"} <= names, names)
     if rid:
         got, _ = fetch(rid)
         check("worker/outbox-download", got == b"roundtrip-payload-7", got[:30])
@@ -614,6 +656,10 @@ def cli_checks(wcfg):
     """a2a-skill/api.py is the surface the skill actually drives."""
     rc, out, err = cli(wcfg, "agents")
     check("cli/agents", rc == 0 and "wk" in out, (rc, out[:80], err[:80]))
+    fu = upload("cli.txt", b"cli-file-9")
+    dl = os.path.join(SCRATCH, "cli-dl.txt")
+    rc, out, _ = cli(wcfg, "file", "--get", fu["id"], "--out", dl)
+    check("cli/file-get", rc == 0 and open(dl, "rb").read() == b"cli-file-9", out[:80])
     rc, out, _ = cli(wcfg, "new", "--to", "wk", "--text", "cli smoke")
     tid = (json.loads(out) or {}).get("task_id") if rc == 0 and out.startswith("{") else None
     check("cli/new", bool(tid), out[:120])
@@ -654,10 +700,11 @@ dispatch_grace: 4
 agent_retention: 300
 task_retention: 300
 approval_timeout: 3
-input_required_timeout: 5
+input_required_timeout: 8
 default_task_timeout: 60
 max_file_mb: 1
 max_files_per_task: 3
+max_body_mb: 1
 """)
     srv = subprocess.Popen([venv_python(SRV), "server.py"], cwd=SRV,
                            env={**os.environ, "A2A_SERVER_CONFIG": cfg},

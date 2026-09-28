@@ -26,6 +26,7 @@ import drivers
 HERE = Path(__file__).parent
 HOME = Path.home() / ".a2a-worker"
 VALID_REPORT = ("completed", "failed", "input-required")
+CURRENT = None  # the in-flight Runner; shared with the signal path and manual reports
 
 
 def _expand(v):
@@ -188,8 +189,9 @@ def register(cfg):
 class Runner:
     """One in-flight task: driver thread + result + reporting state."""
 
-    def __init__(self, cfg, task, holder):
-        holder[0] = self  # visible to the signal handler BEFORE the driver thread starts
+    def __init__(self, cfg, task):
+        global CURRENT
+        CURRENT = self  # visible to the signal handler BEFORE the driver thread starts
         self.cfg, self.task = cfg, task
         self.ws_root = os.path.expanduser(cfg.get("workspace_dir", "~/.a2a-worker/tasks"))
         self.lease = task["lease_id"]
@@ -227,9 +229,13 @@ class Runner:
                 fh.write(data)
 
     def collect_outbox(self):
-        """Upload driver-produced files from <ws>/out/; per-name ids cached so a
-        partial-failure retry uploads only what never landed. None = retry next
-        tick (the heartbeat keeps running either way)."""
+        """Upload driver-produced files from <ws>/out/, ONE per call so the poll
+        heartbeat never goes quiet for more than a single request. True = a file
+        landed (poll again, next file next tick); False = transient trouble
+        (back off); a list = every file is staged, ready to report. Per-name ids
+        are cached so a retry uploads only what never landed. A permanent
+        rejection (e.g. 413 over cap) raises: the task must fail with the real
+        reason, not spin until timeout_stale."""
         out = os.path.join(self._ws(), "out")
         for nm in sorted(os.listdir(out)) if os.path.isdir(out) else []:
             fp = os.path.join(out, nm)
@@ -238,10 +244,14 @@ class Runner:
             with open(fp, "rb") as fh:
                 s2, body = api(self.cfg, "POST",
                                f"/domains/{self.cfg['domain']}/files?name={urllib.parse.quote(nm)}",
-                               raw=True, data=fh.read(), timeout=60)  # heartbeat thread: stay under online_timeout
+                               raw=True, data=fh.read(), timeout=60)
             if s2 != 200:
-                return None
+                print(f"[worker] outbox upload {nm} -> HTTP {s2}", flush=True)
+                if 400 <= s2 < 500:
+                    raise RuntimeError(f"outbox upload rejected: HTTP {s2} for {nm}")
+                return False
             self.uploaded[nm] = json.loads(body)["id"]
+            return True
         return list(self.uploaded.values())
 
     def _run(self):
@@ -259,7 +269,7 @@ class Runner:
                                    "output": "no manual report before timeout"}
                 return
             try:
-                res = drivers.run_command(self.driver_cfg, self.task, self.ws_root,
+                res = drivers.run_command(self.driver_cfg, self.task, self._ws(),
                                           self.cfg.get("need_input_marker", r"^NEED_INPUT:"),
                                           self.cancel_event, self.expected)
             except Exception as e:
@@ -283,7 +293,8 @@ class Runner:
                 "expected_seconds": self.expected}
 
 
-def loop(cfg, holder):
+def loop(cfg):
+    global CURRENT
     cur = None
     backoff = 1
     base = f"/domains/{cfg['domain']}/agents/{cfg['agent']['id']}"
@@ -302,7 +313,7 @@ def loop(cfg, holder):
                 cur.finished.wait(3)  # serial slot freed only after the driver is really dead
                 cur.reported = True
             print(f"[worker] task {r['task']['id']} dispatched", flush=True)
-            cur = Runner(cfg, r["task"], holder)
+            cur = Runner(cfg, r["task"])
         elif s == 410:
             sys.exit("[worker] deregistered from the server (owner action?); stopping. "
                      "Restart manually to rejoin.")  # never silently resurrect
@@ -320,11 +331,16 @@ def loop(cfg, holder):
                 cur.reported = True
                 print(f"[worker] task {cur.task['id']} canceled, dropping", flush=True)
             else:
-                fids = cur.collect_outbox()
-                if fids is None:  # upload trouble: retry next tick, heartbeat keeps running
+                try:
+                    fids = cur.collect_outbox()
+                except RuntimeError as e:  # permanent rejection: report failure with the real reason
+                    cur.result = {"status": "failed", "fail_reason": "driver_error",
+                                  "output": f"{e}; driver output tail: {str(cur.result.get('output', ''))[-1000:]}"}
+                    fids = list(cur.uploaded.values())
+                if fids is False:  # upload trouble: retry next tick, heartbeat keeps running
                     time.sleep(min(backoff, cfg.get("busy_poll_interval", 5)))
                     backoff = min(backoff * 2, 30)
-                else:
+                elif fids is not True:
                     res = {k: v for k, v in cur.result.items() if v is not None}
                     s2, r2 = api(cfg, "POST", f"{base}/results",
                                  {"task_id": cur.task["id"], "lease_id": cur.lease, **res,
@@ -333,21 +349,22 @@ def loop(cfg, holder):
                         cur.reported = True
                         print(f"[worker] task {cur.task['id']} -> {cur.result['status']}"
                               + ("" if r2.get("accepted", True) else " (late_result, dropped)"), flush=True)
+                    elif 400 <= s2 < 500:
+                        cur.reported = True  # a 4xx is permanent: retrying would wedge the slot forever
+                        print(f"[worker] result rejected ({s2} {r2}); dropping {cur.task['id']}", flush=True)
                     else:
                         # short backoff only: the loop must keep polling (heartbeat)
                         time.sleep(min(backoff, cfg.get("busy_poll_interval", 5)))
                         backoff = min(backoff * 2, 30)
             if cur.reported:
                 cur = None
-                holder[0] = None
+                CURRENT = None
                 backoff = 1
         if hold and cur is not None and cur.result is None:
             time.sleep(cfg.get("busy_poll_interval", 5))
 
 
 class ReportHandler(BaseHTTPRequestHandler):
-    holder = None  # [Runner|None], injected at startup
-
     def do_POST(self):
         if self.path != "/report":
             self.send_error(404)
@@ -357,7 +374,7 @@ class ReportHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self.send_error(400)
             return
-        cur = self.holder[0] if self.holder else None
+        cur = CURRENT
         # only the in-flight MANUAL task accepts a human report — anything else
         # would forge a result and bypass the anti-fake-success chain
         ok = (cur and cur.manual and cur.task["id"] == body.get("task_id")
@@ -407,7 +424,7 @@ def main():
     acquire_lock(cfg)
 
     def kill_current_driver():
-        cur = ReportHandler.holder[0] if ReportHandler.holder else None
+        cur = CURRENT
         if cur:
             cur.cancel()  # ask the driver thread to kill the process group...
             cur.finished.wait(3)  # ...and WAIT: process exit would slaughter daemon threads mid-kill
@@ -416,8 +433,6 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
     atexit.register(lambda: worker_lock(cfg).unlink(missing_ok=True))
     atexit.register(kill_current_driver)  # LIFO: registered LAST, runs FIRST (kill before unlock)
-    holder = [None]
-    ReportHandler.holder = holder
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", local_port(cfg)), ReportHandler)
     except OSError as e:
@@ -429,7 +444,7 @@ def main():
     # with silent restarts hides it. atexit kills the driver; the server fails the task
     # as worker_offline and notifies both owners — failure stays visible.
     register(cfg)
-    loop(cfg, holder)
+    loop(cfg)
 
 
 if __name__ == "__main__":

@@ -78,6 +78,7 @@ macOS without admin rights. A worker runs one task at a time.
 git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
 cd a2a-cowork/a2a-server
 cp server.example.yaml server.yaml
+export A2A_TOKEN_A=secret-a A2A_TOKEN_B=secret-b   # the example's ${ENV} tokens; or write literal tokens into server.yaml
 ./start.sh
 ```
 
@@ -120,7 +121,7 @@ the two agents plus every event, which is what you want open when debugging.
 (`feishu{app_id,app_secret}`, `dingtalk{app_key,app_secret,agent_id}`,
 `wecom{corp_id,corp_secret,agent_id}`, `telegram_bot_token`,
 `slack_bot_token`, `discord_bot_token`), and timing knobs (offline timeout,
-dispatch grace, retention, approval timeout). All credentials support
+dispatch grace, retention, approval timeout). All string values support
 `${ENV_VAR}` expansion.
 
 `worker.yaml` (per workstation): server URL, domain and token, agent identity
