@@ -82,7 +82,7 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 
 `server.yaml`：域列表（id、token、可选 channel）、IM 凭据（飞书/钉钉/企微的三元组或 telegram/slack/discord 的 bot token）、时序参数。所有字符串值支持 `${ENV_VAR}` 展开。
 
-`worker.yaml`：服务器地址、域和 token、agent 身份与属主、通知绑定、`default_driver` 及其命令行（prompt 经 stdin 和任务文件投递，不进命令行参数）。
+`worker.yaml`：服务器地址、域和 token、agent 身份与属主、通知绑定、`driver` 及其命令行（prompt 经 stdin 和任务文件投递，不进命令行参数）。
 
 ## 安全模型
 

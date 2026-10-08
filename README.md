@@ -125,7 +125,7 @@ dispatch grace, retention, approval timeout). All string values support
 `${ENV_VAR}` expansion.
 
 `worker.yaml` (per workstation): server URL, domain and token, agent identity
-and owner, notify binding (channel plus platform id), and `default_driver`
+and owner, notify binding (channel plus platform id), and the `driver` block
 with its `cmd` (the prompt arrives via stdin and a task file, never on the
 command line), `timeout`, and `output: last_json|tail`.
 

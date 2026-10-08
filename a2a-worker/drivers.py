@@ -41,23 +41,32 @@ def _marker_hit(marker, output):
     return None
 
 
-def _extract(mode, raw):
-    if mode == "last_json":
-        for line in reversed(raw.strip().splitlines()):
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
+def _last_json(raw):
+    """The driver's result envelope: the whole output if it is one JSON object
+    (single-line or pretty-printed), else the LAST {...} line (stream output)."""
+    body = raw.strip()
+    for cand in [body, *(ln.strip() for ln in reversed(body.splitlines()))]:
+        if cand.startswith("{"):
             try:
-                obj = json.loads(line)
+                return json.loads(cand)
             except json.JSONDecodeError:
                 continue
-            if obj.get("is_error") or obj.get("ok") is False:  # vendor envelopes: claude / openclaw exec
-                return raw.strip(), "error flag in structured output"
-            out = (obj.get("result") or obj.get("text") or obj.get("final") or "").strip()
-            if not out:  # {"result": ""} is an empty answer, not the whole envelope
-                return raw.strip(), "empty result in structured output"
-            return out, None
-        return raw.strip(), "no JSON line in output"
+    return None
+
+
+def _extract(mode, raw):
+    if mode == "last_json":
+        obj = _last_json(raw)
+        if obj is None:
+            return raw.strip(), "no JSON line in output"
+        if obj.get("is_error") or obj.get("ok") is False:  # vendor envelopes: claude / openclaw exec
+            return raw.strip(), "error flag in structured output"
+        # key presence, not truthiness: 0/false are real results; null is not
+        out = next((str(obj[k]).strip() for k in ("result", "text", "final")
+                    if k in obj and obj[k] is not None), "")
+        if not out:  # {"result": ""} is an empty answer, not the whole envelope
+            return raw.strip(), "empty result in structured output"
+        return out, None
     return raw.strip()[-32000:], None  # tail
 
 

@@ -122,7 +122,7 @@ function renderAgents(list) {
   for (const a of list)
     row(t, [a.domain, span("name", a.agent_id), a.owner,
             [span(a.online ? "dot on" : "dot off"), a.online ? "online" : "offline"],
-            a.accept_policy, a.default_driver,
+            a.accept_policy, a.driver_kind,
             span(a.notify_verified ? "tag green" : "tag gray", a.notify_verified ? "ok" : "unverified"),
             a.description]);
 }

@@ -91,24 +91,28 @@ never guessing from the system (`whoami` output is not a username):
    and test results".
 
 Copy `worker.example.yaml` to `worker.yaml` inside the worker directory, fill
-in the answers, set `default_driver` to the entry matching this tool (e.g.
-`claude-code`), and start as above. The worker registers itself and keeps
+in the answers, point the `driver:` block at this tool (its `cmd` and
+`output` mode — see the examples in `worker.example.yaml`), and start as
+above. The worker registers itself and keeps
 polling. If it warns "notify channel not verified", have the owner re-check
 the ID and restart.
 
 Config changes (policy, driver, notify id) require a restart. Stop the old
-process first (`kill <pid>` / `taskkill /PID <pid> /F`; the pid is in
-`~/.a2a-worker/<agent-id>.lock`), or the old process silently wins.
+worker first with `worker.py stop` (the venv python, any OS; it also kills a
+running driver), or the old process silently wins.
 Re-registering is safe: it overwrites and immediately revives the agent.
 Updating the worker code follows the same order: stop the old process, replace
-the files, start again (it re-registers itself). An un-killed old process
+the files, start again (it re-registers itself). An un-stopped old process
 keeps running the old code.
 Several agents (e.g. claude + codex) can run on one machine; each has its own
-lock file and loopback port.
+lock file and loopback port. But one agent id must run on exactly ONE machine
+at a time — the lock only guards this machine, and two machines sharing an id
+kill each other's tasks as `worker_restart`.
 
 ## Leaving the team
 
-Stop the worker process, then run `api.py deregister` (same venv python as above). Its unfinished tasks
+Stop the worker (`worker.py stop`, same venv python as above), then run
+`api.py deregister`. Its unfinished tasks
 are marked failed and the initiators' owners are notified. Restart the worker
 script later to rejoin.
 

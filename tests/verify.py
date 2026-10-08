@@ -114,7 +114,7 @@ def wait_status(tid, want, timeout=25):
 def register(aid, owner="u1", policy="auto", accept_from="all"):
     s, r = call("POST", "/domains/team-a/agents/register",
                 {"agent_id": aid, "owner_username": owner, "accept_policy": policy,
-                 "accept_from": accept_from, "default_driver": f"drv-{aid}", "default_driver_kind": "command",
+                 "accept_from": accept_from, "driver_kind": "command",
                  "notify": {"channel": "log", "id_type": "text", "id": f"nid-{owner}"}})
     assert s == 200, (s, r)
     return r
@@ -165,11 +165,18 @@ def server_checks():
     s, agents = call("GET", "/domains/team-a/agents")
     check("register/idempotent-directory", s == 200 and [a["agent_id"] for a in agents].count("w") == 1)
 
+    # a path-hostile agent id must be rejected up front: stored, it would unroutable-match
+    # no poll endpoint and spin the worker's 404->register loop forever
+    s, r = call("POST", "/domains/team-a/agents/register",
+                {"agent_id": "bad/id", "owner_username": "u1",
+                 "notify": {"channel": "log", "id_type": "text", "id": "x"}})
+    check("register/agent-id-charset-rejected", s == 400, (s, r))
+
     # register persisted the session and driver-kind columns
     row = q1("SELECT * FROM agents WHERE agent_id='w'")
     check("register/persists-session-and-kind",
-          row["session"] and row["default_driver_kind"] == "command",
-          f"session={row['session']!r} kind={row['default_driver_kind']!r}")
+          row["session"] and row["driver_kind"] == "command",
+          f"session={row['session']!r} kind={row['driver_kind']!r}")
 
     # registered for the offline-probe section below; public_base is configured
     # WITH a trailing slash on purpose (checked via notify links further down)
@@ -493,13 +500,11 @@ domain: team-a
 domain_token: {TOKEN}
 agent: {{id: {agent}, owner: u1, accept_policy: auto, accept_from: all}}
 notify: {{channel: log, id_type: text, id: u1}}
-default_driver: main
 need_input_marker: '^NEED_INPUT:'
 workspace_dir: {os.path.join(SCRATCH, 'ws')}
 local_port: {free_port()}          # explicit: the derived default could collide with a stray process
 busy_poll_interval: 1
-drivers:
-  main: {driver}
+driver: {driver}
 """)
         self.log = open(self.logname, "ab")
         self.proc = subprocess.Popen([venv_python(WRK), "worker.py"], cwd=WRK,
@@ -640,6 +645,47 @@ def worker_checks():
     subprocess.run([venv_python(WRK), "worker.py", "report", tid, "--status", "completed", "--output", "late ok"],
                    cwd=WRK, env={**os.environ, "HOME": home, "A2A_WORKER_CONFIG": w.cfg},
                    capture_output=True, text=True, timeout=20)
+
+    # last_json: a pretty-printed envelope is one JSON object, and a falsy result is a result
+    w.stop()
+    w = Worker("wk", '''{kind: command, cmd: "python3 -c 'import json; print(json.dumps({\\"result\\": \\"pretty-ok\\"}, indent=2))'", timeout: 60, output: last_json}''', home)
+    w.wait_online()
+    det = wait_status(new_task("wk", "pretty json"), "completed")
+    check("worker/last-json-pretty-printed",
+          det["status"] == "completed" and det["convo"][-1]["text"].strip() == "pretty-ok", det)
+    w.stop()
+    w = Worker("wk", '''{kind: command, cmd: "python3 -c 'import json; print(json.dumps({\\"result\\": 0}))'", timeout: 60, output: last_json}''', home)
+    w.wait_online()
+    det = wait_status(new_task("wk", "falsy result"), "completed")
+    check("worker/last-json-falsy-result",
+          det["status"] == "completed" and det["convo"][-1]["text"].strip() == "0", det)
+    # a null result is NOT a result: fake success would be the worst failure
+    w.stop()
+    w = Worker("wk", '''{kind: command, cmd: "python3 -c 'import json; print(json.dumps({\\"result\\": None}))'", timeout: 60, output: last_json}''', home)
+    w.wait_online()
+    det = wait_status(new_task("wk", "null result"), "failed")
+    check("worker/last-json-null-result-fails", det.get("fail_reason") == "driver_error", det)
+    # a JSON envelope indented inside noisy output is still the result line
+    w.stop()
+    w = Worker("wk", '''{kind: command, cmd: "echo noise; echo '  {\\"result\\": \\"indented\\"}'", timeout: 60, output: last_json}''', home)
+    w.wait_online()
+    det = wait_status(new_task("wk", "indented line"), "completed")
+    check("worker/last-json-indented-line",
+          det["status"] == "completed" and det["convo"][-1]["text"].strip() == "indented", det)
+
+    # graceful stop via the CLI: the worker exits AND its driver does not survive it
+    w.stop()
+    pidfile = os.path.join(SCRATCH, "stop.pid")
+    w = Worker("wk", f"{{kind: command, cmd: 'echo $$ > {pidfile}; sleep 47', timeout: 120, output: tail}}", home)
+    w.wait_online()
+    tid = new_task("wk", "long then stop")
+    wait_status(tid, "working", timeout=25)
+    subprocess.run([venv_python(WRK), "worker.py", "stop"], cwd=WRK,
+                   env={**os.environ, "HOME": home, "A2A_WORKER_CONFIG": w.cfg},
+                   capture_output=True, text=True, timeout=20)
+    check("worker/stop-cli-exits", w.wait_exit())
+    time.sleep(1)
+    check("worker/stop-kills-driver", process_alive(pidfile) is False, f"pidfile={pidfile}")
     w.stop()
     cli_checks(w.cfg)
 

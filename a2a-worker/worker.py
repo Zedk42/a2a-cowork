@@ -1,9 +1,10 @@
 """A2A worker: outbound long-poll loop + one-shot driver execution.
 
 Platform: Windows / Linux / macOS. Single instance via an exclusively-created
-lock file holding the pid. The poll loop NEVER stops while a driver runs in
-the background — poll is the heartbeat. `python worker.py report <task_id> ...`
-fills in manual-driver results via the loopback HTTP endpoint.
+lock file holding the pid. The poll loop NEVER stops while a driver runs in the
+background — poll is the heartbeat. Two loopback subcommands: `python worker.py
+report <task_id> ...` fills in manual-driver results, `python worker.py stop`
+stops the worker and kills its driver (the graceful stop on every OS).
 """
 import argparse
 import atexit
@@ -27,6 +28,7 @@ HERE = Path(__file__).parent
 HOME = Path.home() / ".a2a-worker"
 VALID_REPORT = ("completed", "failed", "input-required")
 CURRENT = None  # the in-flight Runner; shared with the signal path and manual reports
+LOCK_FILE = None  # set in main; the /stop hard-exit cleans it (atexit does not run there)
 
 
 def _expand(v):
@@ -56,22 +58,19 @@ def load_cfg():
     missing += [f"notify.{k}" for k in ("channel", "id_type", "id") if not nb.get(k)]
     if missing:
         sys.exit(f"worker.yaml is missing: {', '.join(missing)}")
-    dd = cfg.get("default_driver", "command")
-    if dd not in (cfg.get("drivers") or {}):
-        sys.exit(f"worker.yaml error: default_driver '{dd}' has no entry under drivers:")
-    for name, dc in (cfg.get("drivers") or {}).items():
-        if not isinstance(dc, dict):
-            sys.exit(f"worker.yaml error: drivers.{name} must be a mapping")
-        kind = dc.get("kind", "command")
-        if kind not in ("command", "manual"):
-            sys.exit(f"worker.yaml error: drivers.{name}.kind must be command|manual, got {kind!r}")
-        if kind == "command" and not (isinstance(dc.get("cmd"), str) and dc["cmd"].strip()):
-            sys.exit(f"worker.yaml error: drivers.{name} needs a cmd string")
-        if dc.get("output") not in (None, "last_json", "tail"):
-            sys.exit(f"worker.yaml error: drivers.{name}.output must be last_json or tail, got {dc.get('output')!r}")
-        for num in ("timeout", "manual_timeout_hours"):
-            if not _positive(dc.get(num)):
-                sys.exit(f"worker.yaml error: drivers.{name}.{num} must be a positive number, got {dc.get(num)!r}")
+    dd = cfg.get("driver")
+    if not isinstance(dd, dict):
+        sys.exit("worker.yaml error: expected a `driver:` block (kind, cmd, timeout, output)")
+    kind = dd.get("kind", "command")
+    if kind not in ("command", "manual"):
+        sys.exit(f"worker.yaml error: driver.kind must be command|manual, got {kind!r}")
+    if kind == "command" and not (isinstance(dd.get("cmd"), str) and dd["cmd"].strip()):
+        sys.exit("worker.yaml error: driver needs a cmd string")
+    if dd.get("output") not in (None, "last_json", "tail"):
+        sys.exit(f"worker.yaml error: driver.output must be last_json or tail, got {dd.get('output')!r}")
+    for num in ("timeout", "manual_timeout_hours"):
+        if not _positive(dd.get(num)):
+            sys.exit(f"worker.yaml error: driver.{num} must be a positive number, got {dd.get(num)!r}")
     for num in ("busy_poll_interval", "local_port"):
         if not _positive(cfg.get(num)):
             sys.exit(f"worker.yaml error: {num} must be a positive number, got {cfg.get(num)!r}")
@@ -145,6 +144,20 @@ def local_port(cfg):
     return 7000 + int(hashlib.sha256(cfg["agent"]["id"].encode()).hexdigest()[:4], 16) % 1000
 
 
+def loopback_post(cfg, path, payload):
+    """One loopback subcommand call (report / stop); exits 1 when the worker
+    is not running or refuses."""
+    req = urllib.request.Request(f"http://127.0.0.1:{local_port(cfg)}{path}",
+                                 data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            print(r.read().decode())
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        print(e.read().decode() if hasattr(e, "read") else str(e))
+        sys.exit(1)
+
+
 def acquire_lock(cfg):
     HOME.mkdir(exist_ok=True)
     lock = worker_lock(cfg)
@@ -157,20 +170,18 @@ def acquire_lock(cfg):
         pass
     old = lock.read_text().strip()
     if old and pid_alive(old):
-        sys.exit(f"another worker for agent {cfg['agent']['id']} is running (pid {old}); stop it first: kill {old}")
+        sys.exit(f"another worker for agent {cfg['agent']['id']} is running (pid {old}); "
+                 f"stop it first: python worker.py stop")
     lock.unlink(missing_ok=True)  # stale (another starter may have removed it first)
     acquire_lock(cfg)
 
 
 def register(cfg):
     a = cfg["agent"]
-    driver_cfg = cfg.get("drivers", {}).get(cfg.get("default_driver", "command"), {})
     payload = {
         "agent_id": a["id"], "owner_username": a["owner"], "description": a.get("description", ""),
         "accept_policy": a.get("accept_policy", "notify_run"), "accept_from": a.get("accept_from", "all"),
-        "default_driver": cfg.get("default_driver", "command"),
-        "default_driver_kind": driver_cfg.get("kind", "command"),  # server detects manual by kind
-
+        "driver_kind": (cfg.get("driver") or {}).get("kind", "command"),  # server notifies manual dispatch by kind
         "notify": {"channel": cfg["notify"]["channel"], "id_type": cfg["notify"]["id_type"], "id": cfg["notify"]["id"]}}
     while True:  # server may still be booting/upgrading; keep the worker alive
         s, r = api(cfg, "POST", f"/domains/{cfg['domain']}/agents/register", payload)
@@ -201,7 +212,7 @@ class Runner:
         self.uploaded = {}   # outbox name -> staged file id; retries upload only what never landed
         self.cancel_event = threading.Event()
         self.finished = threading.Event()  # set when _run exits (driver cleaned up)
-        self.driver_cfg = cfg.get("drivers", {}).get(cfg.get("default_driver", "command"), {})
+        self.driver_cfg = cfg.get("driver") or {}
         self.manual = self.driver_cfg.get("kind") == "manual"
         if self.manual:
             self.expected = int(float(self.driver_cfg.get("manual_timeout_hours", 24)) * 3600)
@@ -364,8 +375,26 @@ def loop(cfg):
             time.sleep(cfg.get("busy_poll_interval", 5))
 
 
+def kill_current_driver():
+    cur = CURRENT
+    if cur:
+        cur.cancel()  # ask the driver thread to kill the process group...
+        cur.finished.wait(3)  # ...and WAIT: process exit would slaughter daemon threads mid-kill
+
+
 class ReportHandler(BaseHTTPRequestHandler):
     def do_POST(self):
+        if self.path == "/stop":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+            self.wfile.flush()
+            # the one graceful stop on every OS: taskkill /F skips atexit and would
+            # orphan the driver tree on Windows. Cleanup happens HERE, then a hard exit.
+            kill_current_driver()
+            LOCK_FILE.unlink(missing_ok=True)
+            os._exit(0)
         if self.path != "/report":
             self.send_error(404)
             return
@@ -386,6 +415,7 @@ class ReportHandler(BaseHTTPRequestHandler):
         else:
             cur.result = {"status": body["status"], "output": body.get("output", ""),
                           "question": body.get("question"), "fail_reason": body.get("fail_reason")}
+            cur.cancel_event.set()  # wake the parked manual wait in _run; it must not linger for hours
             status, msg = 200, {"ok": True}
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -405,33 +435,24 @@ def main():
     rep.add_argument("--output", default="")
     rep.add_argument("--question", default=None)
     rep.add_argument("--fail-reason", default=None)
+    sub.add_parser("stop", help="stop the running worker for this agent (kills its driver too)")
     args = ap.parse_args()
     cfg = load_cfg()
     if args.cmd == "report":
-        req = urllib.request.Request(f"http://127.0.0.1:{local_port(cfg)}/report",
-                                     data=json.dumps({"task_id": args.task_id, "status": args.status,
-                                                      "output": args.output, "question": args.question,
-                                                      "fail_reason": args.fail_reason}).encode(),
-                                     headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                print(r.read().decode())
-        except (urllib.error.HTTPError, urllib.error.URLError) as e:
-            body = e.read().decode() if hasattr(e, "read") else str(e)
-            print(body)
-            sys.exit(1)
+        loopback_post(cfg, "/report", {"task_id": args.task_id, "status": args.status,
+                                       "output": args.output, "question": args.question,
+                                       "fail_reason": args.fail_reason})
         return
+    if args.cmd == "stop":
+        loopback_post(cfg, "/stop", {})
+        return
+    global LOCK_FILE
     acquire_lock(cfg)
-
-    def kill_current_driver():
-        cur = CURRENT
-        if cur:
-            cur.cancel()  # ask the driver thread to kill the process group...
-            cur.finished.wait(3)  # ...and WAIT: process exit would slaughter daemon threads mid-kill
+    LOCK_FILE = worker_lock(cfg)
 
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # cleanup rides on atexit
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-    atexit.register(lambda: worker_lock(cfg).unlink(missing_ok=True))
+    atexit.register(lambda: LOCK_FILE.unlink(missing_ok=True))
     atexit.register(kill_current_driver)  # LIFO: registered LAST, runs FIRST (kill before unlock)
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", local_port(cfg)), ReportHandler)

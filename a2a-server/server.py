@@ -106,6 +106,8 @@ async def any_err(request, exc):  # same rollback duty for uncaught errors (500s
 
 
 now = time.time
+AGENT_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")  # ids travel in URL paths and the
+# x-agent-id header: a "/" matches no route (404 poll loop), non-ASCII breaks the header
 
 
 def iso(ts):
@@ -294,6 +296,19 @@ def require_agent(domain, aid):
     return a
 
 
+def remove_agent(a):
+    """Session-guarded agent deletion + owner-binding cleanup (deregister and the
+    retention sweep share it). True if this call deleted the row; a re-registered
+    row (new session) survives."""
+    if not x("DELETE FROM agents WHERE domain_id=? AND agent_id=? AND session=?",
+             (a["domain_id"], a["agent_id"], a["session"])):
+        return False
+    if not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (a["domain_id"], a["owner_username"])):
+        x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (a["domain_id"], a["owner_username"]))
+    drop_waiter(a["domain_id"], a["agent_id"])
+    return True
+
+
 # ---------- agent lifecycle ----------
 
 @app.post("/domains/{d}/agents/register")
@@ -303,6 +318,11 @@ async def register(d, req: Request):
     for k in ("agent_id", "owner_username", "notify"):
         if k not in b:
             raise ApiErr(400, f"missing {k}")
+    if not isinstance(b["agent_id"], str) or b["agent_id"] in (".", "..") \
+            or not AGENT_ID_RE.fullmatch(b["agent_id"]):
+        raise ApiErr(400, "agent_id must be 1-64 chars of A-Z a-z 0-9 _ . -")
+    if not isinstance(b["owner_username"], str) or not b["owner_username"].strip():
+        raise ApiErr(400, "owner_username must be a non-empty string")
     af = b.get("accept_from", "all")
     if af != "all" and not (isinstance(af, list) and all(isinstance(i, str) for i in af)):
         raise ApiErr(400, "accept_from must be 'all' or a list of agent ids")
@@ -332,19 +352,17 @@ async def register(d, req: Request):
     DEREGISTERED.pop((d, b["agent_id"]), None)  # an explicit re-register revives the agent
     DB.execute("INSERT OR REPLACE INTO agents "
                "(domain_id, agent_id, owner_username, description, accept_policy, accept_from, "
-               "default_driver, default_driver_kind, session, last_seen_at, registered_at) "
-               "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+               "driver_kind, session, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
                (d, b["agent_id"], b["owner_username"], b.get("description", ""),
                 b.get("accept_policy", "notify_run"),
-                "all" if af == "all" else json.dumps(af), b.get("default_driver", "command"),
-                b.get("default_driver_kind", "command"), session, ts, ts))
+                "all" if af == "all" else json.dumps(af), b.get("driver_kind", "command"), session, ts))
     old = q1("SELECT verified FROM owner_bindings WHERE domain_id=? AND username=? AND channel=?",
              (d, b["owner_username"], nb["channel"]))
     if verified or not (old and old["verified"]):  # a failed declaration never overwrites a verified binding
         DB.execute("INSERT OR REPLACE INTO owner_bindings "
-                   "(domain_id, username, channel, id_type, id, platform_uid, verified, updated_at) "
-                   "VALUES (?,?,?,?,?,?,?,?)",
-                   (d, b["owner_username"], nb["channel"], nb["id_type"], nb["id"], uid, verified, ts))
+                   "(domain_id, username, channel, id_type, id, platform_uid, verified) "
+                   "VALUES (?,?,?,?,?,?,?)",
+                   (d, b["owner_username"], nb["channel"], nb["id_type"], nb["id"], uid, verified))
     if prev and prev["o"] != b["owner_username"] and \
             not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (d, prev["o"])):
         x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (d, prev["o"]))
@@ -352,7 +370,7 @@ async def register(d, req: Request):
     # emit exactly one event: notify_failed on a broken binding, register_verify otherwise
     emit(f"reg:{b['agent_id']}", d, "notify_failed" if not verified else "register_verify",
          {"notify_verified": bool(verified), "why": why})
-    return {"notify_verified": bool(verified), "session_id": session}
+    return {"notify_verified": bool(verified)}
 
 
 @app.post("/domains/{d}/agents/{aid}/deregister")
@@ -365,12 +383,11 @@ async def deregister(d, aid, req: Request):
                         ctx={"agent": aid})  # BEFORE deleting the binding, or the goodbye can never be delivered
     # the send above awaits, so a re-register may have landed meanwhile (deregister
     # → restart with new config): only OUR session's row may die, the fresh one survives
-    if x("DELETE FROM agents WHERE domain_id=? AND agent_id=? AND session=?", (d, aid, a["session"])):
-        if not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (d, a["owner_username"])):
-            x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (d, a["owner_username"]))
+    if remove_agent(a):
         DB.commit()
-        drop_waiter(d, aid)
-        DEREGISTERED[(d, aid)] = now() + 60
+        # the tombstone must outlive any real poll gap: an idle long-poll (up to 65s) or
+        # one 60s outbox upload plus a busy interval — 60s was outrunnable, resurrecting the agent
+        DEREGISTERED[(d, aid)] = now() + 180
     return Response(status_code=204)
 
 
@@ -381,8 +398,7 @@ async def list_agents(d, req: Request):
     for a in q("SELECT * FROM agents WHERE domain_id=?", (d,)):
         b = owner_binding(d, a["owner_username"])  # same lookup the send path uses
         out.append({"agent_id": a["agent_id"], "owner_username": a["owner_username"], "description": a["description"],
-                    "accept_policy": a["accept_policy"], "default_driver": a["default_driver"],
-                    "default_driver_kind": a["default_driver_kind"],
+                    "accept_policy": a["accept_policy"], "driver_kind": a["driver_kind"],
                     "online": online(a, now()),
                     "notify_verified": bool(b and b["verified"])})
     return out
@@ -563,8 +579,9 @@ async def poll(d, aid, req: Request):
         raise ApiErr(410, "deregistered")  # every poll inside the window gets 410, not just the first
     agent = require_agent(d, aid)
     agent_session = agent["session"]
-    st = b.get("exec_state") or {"tasks": []}
-    seen = [t for t in st.get("tasks", []) if isinstance(t, dict) and t.get("task_id")]
+    st = b.get("exec_state") if isinstance(b.get("exec_state"), dict) else {"tasks": []}
+    seen = [t for t in st.get("tasks", []) if isinstance(t, dict)
+            and isinstance(t.get("task_id"), str) and t.get("task_id")]  # str guard: a non-str must not reach the SQL binding
 
     x("UPDATE agents SET last_seen_at=? WHERE domain_id=? AND agent_id=?", (now(), d, aid))
     DB.commit()
@@ -590,7 +607,7 @@ async def poll(d, aid, req: Request):
         # re-read inside deliver: the second call runs AFTER the long-poll await, during
         # which the agent may have re-registered (new session) — leasing under the stale
         # captured session would get the task killed as worker_restart on the next poll
-        a = q1("SELECT session, default_driver_kind FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
+        a = q1("SELECT session, driver_kind FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
         if not a:
             return None  # deregistered while we were suspended
         seen_ids = {s["task_id"] for s in seen}
@@ -616,7 +633,7 @@ async def poll(d, aid, req: Request):
         DB.commit()
         emit(row["id"], d, "state_change", {"to": "dispatched"})
         t = q1("SELECT * FROM tasks WHERE id=?", (row["id"],))
-        if a["default_driver_kind"] == "manual":  # kind, not the driver's name
+        if a["driver_kind"] == "manual":  # the worker runs every task with its one configured driver
             await notify_task(t, "manual_dispatch", to="target", summary=t["text"][:200])
         fs = q("SELECT * FROM files WHERE domain_id=? AND task_id=? ORDER BY created_at", (d, row["id"]))
         return {"task": {"id": t["id"], "lease_id": lease, "text": t["text"], "initiator": t["initiator"],
@@ -645,7 +662,8 @@ async def poll(d, aid, req: Request):
 async def results(d, aid, req: Request):
     domain_of(req, d)
     b = await json_body(req)
-    task = q1("SELECT * FROM tasks WHERE domain_id=? AND id=?", (d, b.get("task_id")))
+    tid = b.get("task_id")
+    task = q1("SELECT * FROM tasks WHERE domain_id=? AND id=?", (d, tid)) if isinstance(tid, str) else None
     lease_ok = task and task["target"] == aid and b.get("lease_id") and task["lease_id"] == b["lease_id"]
     if lease_ok and b.get("status") == "input-required" and task["status"] == "available":
         return {"accepted": True, "duplicate": True}  # IR retry raced a follow-up: applied, task requeued
@@ -696,9 +714,6 @@ async def upload_file(d, req: Request, name=""):
     """Raw-body upload; the response (and any task/result payload) carries the
     meta: id, name, size, sha256. Bytes never travel inside task messages."""
     domain_of(req, d)
-    who = req.headers.get("x-agent-id")
-    if not who:
-        raise ApiErr(403, "missing X-Agent-Id")
     name = _safe_name(name)
     cap = CFG["max_file_mb"] * 1024 * 1024
     if (cl := req.headers.get("content-length") or "").isdigit() and int(cl) > cap:
@@ -719,8 +734,8 @@ async def upload_file(d, req: Request, name=""):
         return hashlib.sha256(buf).hexdigest()
 
     sha = await asyncio.to_thread(_store)  # big writes must not stall the loop
-    DB.execute("INSERT INTO files (id,domain_id,uploader,task_id,name,size,sha256,created_at) "
-               "VALUES (?,?,?,NULL,?,?,?,?)", (fid, d, who, name, len(buf), sha, ts))
+    DB.execute("INSERT INTO files (id,domain_id,task_id,name,size,sha256,created_at) "
+               "VALUES (?,?,NULL,?,?,?,?)", (fid, d, name, len(buf), sha, ts))
     DB.commit()
     return {"id": fid, "name": name, "size": len(buf), "sha256": sha}
 
@@ -777,10 +792,9 @@ async def sweep():
                 await send_to_owner(a["domain_id"], a["owner_username"], "agent_cleaned",
                                     task_id=f"reg:{a['agent_id']}",
                                     ctx={"agent": a["agent_id"], "days": int(CFG["agent_retention"] // 86400)})
-                x("DELETE FROM agents WHERE domain_id=? AND agent_id=?", (a["domain_id"], a["agent_id"]))
-                if not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (a["domain_id"], a["owner_username"])):
-                    x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (a["domain_id"], a["owner_username"]))
-                drop_waiter(a["domain_id"], a["agent_id"])
+                # the notify above awaits: a worker that re-registered in that window
+                # keeps its fresh row (remove_agent is session-guarded)
+                remove_agent(a)
             for f in q("SELECT id, domain_id FROM files WHERE created_at < ?", (t - CFG["task_retention"],)):
                 (FILE_DIR / f["domain_id"] / f["id"]).unlink(missing_ok=True)
             x("DELETE FROM files WHERE created_at < ?", (t - CFG["task_retention"],))
@@ -815,7 +829,7 @@ async def admin_data(token=""):
         b = owner_binding(a["domain_id"], a["owner_username"])  # same lookup the send path uses
         agents.append({"domain": a["domain_id"], "agent_id": a["agent_id"], "owner": a["owner_username"],
                        "description": a["description"], "accept_policy": a["accept_policy"],
-                       "default_driver": a["default_driver"],
+                       "driver_kind": a["driver_kind"],
                        "online": online(a, t),
                        "notify_verified": bool(b and b["verified"])})
     tasks = [{"id": k["id"], "domain": k["domain_id"], "initiator": k["initiator"], "target": k["target"],

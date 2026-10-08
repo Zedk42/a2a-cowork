@@ -10,11 +10,9 @@ CREATE TABLE IF NOT EXISTS agents (
   description    TEXT NOT NULL DEFAULT '',
   accept_policy  TEXT NOT NULL DEFAULT 'notify_run',
   accept_from    TEXT NOT NULL DEFAULT 'all',
-  default_driver TEXT NOT NULL DEFAULT 'command',
-  default_driver_kind TEXT NOT NULL DEFAULT 'command',
+  driver_kind    TEXT NOT NULL DEFAULT 'command',
   session        TEXT NOT NULL DEFAULT '',
   last_seen_at   REAL,
-  registered_at  REAL NOT NULL,
   PRIMARY KEY (domain_id, agent_id)
 );
 CREATE TABLE IF NOT EXISTS owner_bindings (
@@ -25,7 +23,6 @@ CREATE TABLE IF NOT EXISTS owner_bindings (
   id           TEXT NOT NULL,
   platform_uid TEXT NOT NULL DEFAULT '',
   verified     INTEGER NOT NULL DEFAULT 0,
-  updated_at   REAL NOT NULL,
   PRIMARY KEY (domain_id, username, channel)
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -63,7 +60,6 @@ CREATE TABLE IF NOT EXISTS task_events (
 CREATE TABLE IF NOT EXISTS files (
   id         TEXT PRIMARY KEY,
   domain_id  TEXT NOT NULL,
-  uploader   TEXT NOT NULL,
   task_id    TEXT,
   name       TEXT NOT NULL,
   size       INTEGER NOT NULL,

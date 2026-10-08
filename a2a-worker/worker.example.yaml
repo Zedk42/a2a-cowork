@@ -6,7 +6,7 @@ domain: team-a
 domain_token: ${A2A_TOKEN_A}
 
 agent:
-  id: zhangsan-claude            # unique in domain; {owner}-{tool} is a good pattern
+  id: zhangsan-claude            # unique in domain, one machine per id; {owner}-{tool} is a good pattern
   owner: zhangsan                # told by the owner; multiple agents may share one owner
   description: "Claude Code on zhangsan's workstation"
   accept_policy: notify_run  # auto | notify_run | manual
@@ -16,39 +16,17 @@ notify:                      # asked at onboarding: which IM platform + your ID 
   id_type: text
   id: zhangsan
 
-default_driver: claude-code
 need_input_marker: '^NEED_INPUT:'   # matched against the END of driver output: print the marker line LAST
 workspace_dir: ~/.a2a-worker/tasks
 # local_port: 7860           # optional override; default is derived per agent id (no collisions)
 busy_poll_interval: 5
-drivers:
-  claude-code:
-    kind: command
-    # the full task text is fed via stdin AND written to {task_file};
-    # keep argv short ASCII — no prompt content on the command line
-    cmd: 'claude -p --output-format json --permission-mode acceptEdits'
-    timeout: 3600
-    output: last_json
-  codex:
-    kind: command
-    cmd: 'codex exec --json -'
-    timeout: 3600
-    output: tail
-  openclaw:                  # one-shot embedded run, stdin prompt, JSON envelope (ok/status/final)
-    kind: command
-    cmd: 'openclaw agent exec --message-file - --json'
-    timeout: 3600
-    output: last_json
-  hermes:                    # scripted one-shot, plain text stdout; prompt comes from the task file
-    kind: command
-    cmd: 'hermes -z "$(cat {task_file})"'   # POSIX shells only (macOS/Linux): cmd.exe never expands $(...)
-    timeout: 3600
-    output: tail
-  any-cli:                   # template for other -p style CLIs (gemini/qwen/iflow/...)
-    kind: command
-    cmd: 'exit 1'            # fails loudly until you put the real CLI here (never fake-succeed)
-    timeout: 600
-    output: tail
-  human:                     # manual driver: owner runs it, then `python worker.py report ...`
-    kind: manual
-    manual_timeout_hours: 24
+driver:                     # the one driver every task runs with; a worker cannot be re-targeted per task
+  kind: command             # command (subprocess) | manual (you run it, then `worker.py report`)
+  # the full task text is fed via stdin AND written to {task_file};
+  # keep argv short ASCII — no prompt content on the command line.
+  # Other -p style CLIs: swap the cmd line and set the right output mode, e.g.
+  #   cmd: 'codex exec --json -'        output: tail
+  cmd: 'claude -p --output-format json --permission-mode acceptEdits'
+  timeout: 3600
+  output: last_json         # last_json (JSON envelope on stdout) | tail (plain text)
+  # manual instead of a CLI: kind: manual, manual_timeout_hours: 24, drop cmd/timeout/output
