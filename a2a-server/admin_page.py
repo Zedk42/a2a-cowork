@@ -32,7 +32,7 @@ header{position:sticky;top:0;z-index:20;background:var(--card);height:56px;paddi
        display:flex;justify-content:space-between;align-items:center;
        border-bottom:1px solid var(--line)}
 .brand{display:inline-flex;align-items:center;gap:8px}
-.brand .bname{font:500 15px/1 var(--sans);color:var(--soft)}
+.brand .bname{font:500 14px/1 var(--sans);color:var(--soft)}
 .brand .mark{font:700 16px/1 var(--sans);letter-spacing:-.03em;color:var(--ink)}
 .brand .mark i{font-style:normal;color:var(--accent)}
 .live{display:flex;align-items:center;gap:8px;font:12px var(--sans);color:var(--soft)}
@@ -49,12 +49,13 @@ h2{font:600 16px/1.3 var(--sans);margin:0}
       padding:4px 20px 12px;box-shadow:var(--shadow)}
 .card.tbl{overflow-x:auto}  /* tables scroll, never spill; must not clip the topo panel */
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
-th{font:500 12px/1.4 var(--sans);color:var(--soft);text-align:left;
-   padding:12px 12px 8px;border-bottom:1px solid var(--line)}
+th{font:600 11px/1.4 var(--sans);color:var(--soft);text-align:left;text-transform:uppercase;
+   letter-spacing:.05em;padding:12px 12px 8px;border-bottom:1px solid var(--line)}
 .card.tbl th:last-child,.card.tbl td:last-child{width:1%;white-space:nowrap}  /* compact actions */
-td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top;
+td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle;
    font-size:13px;color:var(--muted)}
 tr:last-child td,tr:last-child th{border-bottom:none}
+tr.empty td{text-align:center;padding:20px 12px}  /* centered empty state, not a stray left cell */
 th,td .name,td .mono,.tag{white-space:nowrap}
 td .name{font-weight:500;color:var(--ink);font-family:var(--mono);font-size:12.5px}
 td .mono{font-family:var(--mono);font-size:12.5px}
@@ -64,12 +65,12 @@ tr.brow td{background:var(--red-tint)}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}
 .dot.on{background:#12b76a} .dot.off{background:#d0d5dd}
 .tag{display:inline-flex;align-items:center;font:500 11px/1 var(--sans);
-     padding:3px 9px;border-radius:999px;border:1px solid}
+     padding:3px 9px;border-radius:999px;border:1px solid var(--gray-bd);
+     color:var(--muted);background:var(--gray-tint)}  /* plain tag = neutral pill (channel etc.) */
 .tag.green{color:var(--green);background:var(--green-tint);border-color:var(--green-bd)}
 .tag.red{color:var(--red);background:var(--red-tint);border-color:var(--red-bd)}
 .tag.amber{color:var(--amber);background:var(--amber-tint);border-color:var(--amber-bd)}
 .tag.blue{color:var(--blue);background:var(--blue-tint);border-color:var(--blue-bd)}
-.tag.gray{color:var(--muted);background:var(--gray-tint);border-color:var(--gray-bd)}
 /* overview */
 .domains{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:20px;margin-top:20px}
 .dcard{background:var(--card);border:1px solid var(--line);border-radius:12px;
@@ -94,9 +95,12 @@ tr.brow td{background:var(--red-tint)}
 .topo > svg{display:block;width:100%;height:auto}  /* child only, or the panel icons inherit it */
 .orbit{fill:none;stroke:var(--line-strong);stroke-dasharray:2 7;opacity:.55}
 .slink{stroke:#d0d5dd;stroke-width:1.5}
+.slink:not(.on){stroke-dasharray:4 4}  /* a dead spoke reads as dead */
 .slink.on{stroke:var(--accent);stroke-opacity:.45}
 .tnode{cursor:pointer}
 .tnode rect.body{fill:var(--card);stroke:var(--line-strong);stroke-width:1.25}
+.tnode.off rect.body{fill:#f9fafb}  /* offline cards sit dimmer than live ones */
+.tnode.off .tname{fill:var(--soft)}
 .tnode:hover rect.body,.tnode.sel rect.body{stroke:var(--accent);stroke-width:1.5}
 .tava{fill:var(--blue-tint);stroke-width:1.5}
 .tava.on{stroke:#12b76a}
@@ -127,6 +131,9 @@ tr.brow td{background:var(--red-tint)}
 .btn.pri:hover{background:var(--accent-dk);border-color:var(--accent-dk)}
 .btn.danger:hover{border-color:var(--red);color:var(--red)}
 .btn svg{flex:none}
+.btn.icon-btn{padding:7px 9px}  /* icon-only (panel close): not as wide as labeled buttons */
+.tbl .btn{padding:4px 10px;font-size:12px;gap:5px}  /* row actions shrink a size vs page-level buttons */
+.tbl .btn svg{width:12px;height:12px}
 td .btn + .btn{margin-left:8px}  /* DOM-built buttons have no whitespace between them */
 /* task drill-down */
 #detail{display:none;background:var(--card);border:1px solid var(--line);border-left:2px solid var(--accent);
@@ -134,7 +141,7 @@ td .btn + .btn{margin-left:8px}  /* DOM-built buttons have no whitespace between
         font:12px/1.7 var(--mono);color:var(--muted);white-space:pre-wrap;word-break:break-all}
 /* dialog + toast */
 dialog{border:1px solid var(--line);border-radius:12px;padding:22px 24px 18px;
-       background:var(--card);color:var(--ink);max-width:460px;width:92%;box-shadow:var(--shadow-lg)}
+       background:var(--card);color:var(--ink);max-width:560px;width:92%;box-shadow:var(--shadow-lg)}
 dialog::backdrop{background:rgba(16,24,40,.4)}
 dialog h3{font:600 16px/1.3 var(--sans);margin:0 0 6px}
 .dlg-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
@@ -144,8 +151,10 @@ dialog h3{font:600 16px/1.3 var(--sans);margin:0 0 6px}
            width:190px;background:#fff;color:var(--ink)}
 .fld input:focus{outline:none;border-color:var(--accent);
            box-shadow:0 0 0 3px var(--accent-tint)}
+.code-l{font:600 11px/1 var(--sans);letter-spacing:.05em;
+        color:var(--soft);margin:16px 0 0}  /* no text-transform: "macOS" must keep its casing */
 .code{font:500 12.5px var(--mono);padding:13px 14px;border-radius:8px;text-align:left;
-      margin:16px 0 4px;cursor:pointer;user-select:all;word-break:break-all;
+      margin:7px 0 4px;cursor:pointer;user-select:all;word-break:break-all;
       background:#101828;color:#eaecf0;border:1px solid #344054}
 .code:hover{border-color:var(--accent)}
 .dlg-sub{font:12px var(--sans);color:var(--soft);margin:6px 0 0;text-align:center}
@@ -183,20 +192,20 @@ let DATA = null, view = {d: null, a: null};  // a: selected agent id (survives r
 /* i18n: t(englishString) — zh table maps to Chinese, everything else falls
 through unchanged; one table beats a key scheme when English is the source */
 let LANG = localStorage.getItem("lang") === "zh" ? "zh" : "en";
-const ZH = {
+const ZH = {  // server / agent / worker / driver / token stay English
   "live · 3s": "实时 · 3s", "problem": "异常", "loading…": "加载中…",
-  "Domains": "域列表", "agents online": "agent 在线", "in-flight": "进行中", "last event": "最近事件",
-  "invite": "邀请", "Topology": "拓扑", "Agents": "Agent 列表", "Invites": "邀请码",
-  "Recent tasks": "最近任务", "server": "服务器", "no agents registered": "尚无 agent 注册",
-  "online": "在线", "offline": "离线", "owner": "属主", "policy": "策略", "driver": "驱动",
+  "Domains": "全部域", "agents online": "agent 在线", "in-flight": "进行中", "last event": "最近事件",
+  "invite": "邀请成员", "Topology": "拓扑", "Agents": "Agent 列表", "Invites": "邀请码",
+  "Recent tasks": "最近任务", "no agents registered": "还没有 agent 注册",
+  "online": "在线", "offline": "离线", "owner": "属主", "policy": "策略",
   "notify": "通知", "verified": "已验证", "unverified": "未验证",
   "status": "状态", "code": "邀请码", "note": "备注", "uses left": "剩余次数", "expires": "有效期",
-  "agent": "Agent", "id": "ID",
+  "id": "ID",
   "created": "创建时间", "from": "发起方", "to": "接收方", "reason": "失败原因",
   "kick": "踢出", "disable": "停用", "enable": "启用", "revoke": "吊销", "abort": "中止",
   "create": "创建", "close": "关闭", "disabled": "已停用",
-  "block lifted — the agent returns when its worker restarts": "已解除停用——该 agent 的 worker 重启后自动回归",
-  "none": "暂无", "no tasks yet": "暂无任务", "New invite": "新邀请码",
+  "block lifted — the agent returns when its worker restarts": "已解除停用，该 agent 的 worker 重启后会自动回归",
+  "none": "暂无", "no tasks yet": "暂无任务", "New invite": "新建邀请码",
   "uses": "次数", "valid for (hours)": "有效时长（小时）",
   "copied": "已复制", "copy failed": "复制失败", "failed": "失败",
   "just now": "刚刚", "expired": "已过期",
@@ -430,12 +439,15 @@ function topoSVG(d, did) {
                    x2: cx - ux * 44, y2: cy - uy * 24,  // ends just off the 76x34 chip
                    class: "slink" + (a.online ? " on" : "")}, svg);
   }
-  const srv = svgEl("g", {class: "srv"}, svg);
-  svgEl("rect", {x: cx - 38, y: cy - 17, width: 76, height: 34, rx: 8, filter: "url(#lift)"}, srv);
-  svgEl("text", {x: cx, y: cy + 4, "text-anchor": "middle", class: "tsrv"}, srv).textContent = t("server");
+  if (ags.length) {  // an empty domain shows just the note — a lone chip under it would collide
+    const srv = svgEl("g", {class: "srv"}, svg);
+    svgEl("rect", {x: cx - 38, y: cy - 17, width: 76, height: 34, rx: 8, filter: "url(#lift)"}, srv);
+    svgEl("text", {x: cx, y: cy + 4, "text-anchor": "middle", class: "tsrv"}, srv).textContent = "server";
+  }
   for (const a of ags) {
     const p = pos.get(a.agent_id);
-    const g = svgEl("g", {class: "tnode" + (view.a === a.agent_id ? " sel" : ""), transform: `translate(${p.x},${p.y})`}, svg);
+    const g = svgEl("g", {class: "tnode" + (a.online ? "" : " off") + (view.a === a.agent_id ? " sel" : ""),
+                          transform: `translate(${p.x},${p.y})`}, svg);
     g.onclick = () => showAgent(d, did, a);
     svgEl("rect", {class: "body", x: -BW / 2, y: -BH / 2, width: BW, height: BH, rx: 10, filter: "url(#lift)"}, g);
     svgEl("circle", {class: "tava " + (a.online ? "on" : "off"), cx: -BW / 2 + 20, r: 10}, g);
@@ -486,7 +498,7 @@ function showAgent(d, did, a) {
   p.append(head);
   const meta = el("div", "tp-meta");
   for (const [k, v] of [[t("owner"), a.owner], [t("policy"), a.accept_policy],
-                        [t("driver"), a.driver_kind], [t("notify"), a.notify_verified ? t("verified") : t("unverified")]]) {
+                        ["driver", a.driver_kind], [t("notify"), a.notify_verified ? t("verified") : t("unverified")]]) {
     meta.append(el("span", "k", k), el("span", "v", v));
   }
   p.append(meta);
@@ -501,7 +513,7 @@ function showAgent(d, did, a) {
     p.append(tb);
   }
   const acts = el("div", "tp-acts");
-  const close = el("button", "btn");
+  const close = el("button", "btn icon-btn");
   close.append(icon("x"));
   close.setAttribute("aria-label", t("close"));
   close.onclick = () => { view.a = null; p.hidden = true; };
@@ -530,7 +542,7 @@ function agentActs(d, did, id) {
 function agentsSection(d, did) {
   const [sec, card] = section(t("Agents"), "tbl");
   const tb = el("table");
-  row(tb, [t("agent"), t("owner"), t("status"), t("policy"), t("driver"), ""], true);
+  row(tb, [t("agent"), t("owner"), t("status"), t("policy"), "driver", ""], true);
   for (const a of d.agents.filter(a => a.domain === did)) {
     const tr = row(tb, [span("name", a.agent_id), a.owner,
                        [span(a.online ? "dot on" : "dot off"), a.online ? t("online") : t("offline")],
@@ -550,6 +562,7 @@ function agentsSection(d, did) {
 
 function noteRow(tb, text, n) {
   const tr = document.createElement("tr");
+  tr.className = "empty";
   const td = document.createElement("td");
   td.colSpan = n;
   td.append(el("span", "note", text));
@@ -620,15 +633,17 @@ function inviteDialog(did) {
                           hours: Number(hours.value) || 24});
       body.innerHTML = "";
       const ch = DATA.domains.find(x => x.id === did).channel;
-      const cmd = (py, cd) => el("div", "code",
-          `${cd} && ${py} api.py join --server ${location.origin} --domain ${did} --code ${r.code} `
-          + `--agent-id <id> --owner <name> --notify-channel ${ch} --notify-id-type <t> --notify-id <im-id>`);
-      const c1 = cmd("~/a2a-cowork/a2a-worker/.venv/bin/python", "cd ~/a2a-cowork/a2a-skill");
-      const c2 = cmd("%USERPROFILE%\\a2a-cowork\\a2a-worker\\.venv\\Scripts\\python.exe",
-                     "cd %USERPROFILE%\\a2a-cowork\\a2a-skill");
-      c1.onclick = () => copyText(c1.textContent);
-      c2.onclick = () => copyText(c2.textContent);
-      body.append(c1, c2);
+      const mk = (lbl, py, cd) => {  // one labeled block per platform, click to copy
+        body.append(el("div", "code-l", lbl));
+        const c = el("div", "code",
+            `${cd} && ${py} api.py join --server ${location.origin} --domain ${did} --code ${r.code} `
+            + `--agent-id <id> --owner <name> --notify-channel ${ch} --notify-id-type <t> --notify-id <im-id>`);
+        c.onclick = () => copyText(c.textContent);
+        body.append(c);
+      };
+      mk("macOS · Linux", "~/a2a-cowork/a2a-worker/.venv/bin/python", "cd ~/a2a-cowork/a2a-skill");
+      mk("Windows", "%USERPROFILE%\\a2a-cowork\\a2a-worker\\.venv\\Scripts\\python.exe",
+         "cd %USERPROFILE%\\a2a-cowork\\a2a-skill");
       body.append(el("p", "dlg-sub", `${r.uses}× · ${till(r.expires_at)}`));
     } catch (e) {
       create.disabled = false;

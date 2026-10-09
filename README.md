@@ -1,95 +1,97 @@
+<div align="center">
+
 # a2a-cowork
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![English](https://img.shields.io/badge/lang-English-inactive) [![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-007ec6)](README.zh-CN.md)
+**Coding agents on every machine in the team, dispatching work to each other —
+with the humans supervising from their IM.**
 
-**English** | [简体中文](README.zh-CN.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![Server](https://img.shields.io/badge/server-Linux-lightgrey)
+![Workers](https://img.shields.io/badge/workers-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
+![English](https://img.shields.io/badge/lang-English-inactive)
+[![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-007ec6)](README.zh-CN.md)
 
-> **Contributions welcome** — open an issue or a PR at any time.
+</div>
 
-Coding agents deployed on everyone's machines (Claude Code, Codex CLI, ...)
-dispatch tasks to each other through a2a-cowork and run them headlessly.
-Human owners receive notifications in their office messenger (Feishu,
-DingTalk, WeCom, Slack, ...): new tasks, completions, failures, approvals.
+> 🚧 **Early days** — this project is new and under active development.
+> Issues and PRs are welcome; ⭐ star and 👀 watch to follow along.
 
-![architecture](docs/architecture.png?v=2)
+a2a-cowork connects the coding agents your teammates already run — Claude
+Code, Codex CLI, Gemini CLI, … — into one crew on the local network. Any
+agent can hand a task to any other and get the result back headlessly, while
+the human owners follow everything from their office messenger (Feishu,
+DingTalk, WeCom, Slack, Telegram, Discord): new tasks, completions, failures,
+approvals.
+
+![console overview](docs/console-overview.png?v=2)
+
+## Highlights
+
+- **Star topology, zero inbound ports** — one lightweight server owns the
+  queue, leases, and event log; workers only make outbound long-poll
+  connections, so workstations open no ports and need no fixed IP.
+- **One-sentence onboarding** — the operator mints an expiring invite code in
+  the console; the new member's agent redeems it with one command and receives
+  the domain token. No credential ever gets pasted into a group chat.
+- **Headless drivers** — tasks run unattended (`claude -p`, `codex exec`, any
+  CLI that reads stdin); files ride along (`--file` on dispatch, `out/` on
+  completion) while messages carry only metadata (name, size, sha256).
+- **Humans in the loop** — per-agent accept policy (`auto` / `notify_run` /
+  `manual`) and a source allowlist keep strangers from dispatching to you;
+  approvals and results land in the IM the owner already uses.
+- **Honest results** — leases catch late or stale reports, and a zero exit
+  code with empty or unparseable output fails the task instead of passing it.
+- **Live admin console** — domain overview, agent topology, task drill-down
+  with the full conversation and event log. English / 简体中文.
+
+## How it works
+
+![architecture](docs/architecture.png)
 
 *Any agent on any machine in the local network joins the A2A domain with one
 sentence after loading the skill; it can then assign tasks to other members
 and receive tasks from them. The A2A server owns the queue, leases, and event
 log, and pushes updates to the office messenger in real time.*
 
-## Status
+- **Poll is the heartbeat** — while a driver runs, the worker keeps polling,
+  so a long task is never misjudged as offline and a cancel arrives in
+  seconds.
+- **Questions mid-run** — a blocked agent may ask one question; the answer
+  re-runs the task with its full context.
 
-### IM platforms
+A domain's page in the console — every agent wired to the server, the agent
+list, recent tasks with status tags:
 
-| Platform | Support | Tested |
-|---|---|---|
-| feishu | supported | not yet |
-| dingtalk | supported | not yet |
-| wecom | supported | not yet |
-| slack | supported | not yet |
-| telegram | supported | not yet |
-| discord | supported | not yet |
-| MS Teams | to be built | n/a |
-| WhatsApp | to be built | n/a |
+![console domain page](docs/console-topology.png?v=2)
 
-### Agent runtimes
+## Quick start
 
-| Runtime | Support | Tested |
-|---|---|---|
-| Claude Code | supported | tested |
-| Codex CLI | supported | not yet |
-| Gemini CLI | supported | not yet |
-| OpenClaw | supported | not yet |
-| Hermes | supported | not yet |
+Python 3.9+ everywhere; the server runs on Linux, workers on any OS.
 
-The server deploys on Linux only; workers deploy on Windows, Linux, and
-macOS without admin rights. A worker runs one task at a time.
-
-## How it works
-
-- Star topology: one server, equal peers that both assign tasks and receive
-  them. Workers only make outbound long-poll connections, so a workstation
-  opens no inbound ports and needs no fixed IP.
-- Onboarding: the operator generates an expiring invite code in the console;
-  the new member's agent redeems it with one sentence (`api.py join`) and
-  receives the domain token — no credential pasted into group chats.
-- Poll is the heartbeat: while a driver runs, the worker keeps polling, so a
-  long task is never misjudged as offline and a cancel arrives in seconds.
-- File transfer: attach files when dispatching (`--file`); the worker drops
-  them into the task's `files/<name>`, and anything the driver leaves in
-  `out/` is uploaded and attached to the result. Messages carry only the meta
-  (name, size, sha256), never the bytes.
-- Per-agent task policy (`auto` / `notify_run` / `manual` — see Key concepts)
-  plus a source allowlist that keeps strangers from dispatching to you.
-
-In the console — domain overview, a domain's topology (every agent wired to
-the server), and the invite dialog that mints the one-line join command:
-
-![console overview](docs/console-overview.png)
-
-<table><tr>
-<td><img src="docs/console-topology.png" alt="agent topology" width="520"></td>
-<td><img src="docs/console-invite.png" alt="invite dialog" width="440"></td>
-</tr></table>
-
-## Installation
-
-**Server**:
+### 1 · Start the server
 
 ```bash
 git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
 cd a2a-cowork/a2a-server
 cp server.example.yaml server.yaml
-export A2A_TOKEN_A=secret-a A2A_TOKEN_B=secret-b   # the example's ${ENV} tokens; or write literal tokens into server.yaml
+export A2A_TOKEN_A=secret-a A2A_TOKEN_B=secret-b   # the example's ${ENV} tokens; or write literals into server.yaml
 ./start.sh
 ```
 
 `start.sh` stops a previous instance first, records the pid to `a2a.pid`, and
-logs to `a2a-server.log`.
+logs to `a2a-server.log`. Open `http://<server-lan-ip>:8100/admin` — the two
+example domains greet you.
 
-**Agent**
+### 2 · Mint an invite
+
+In the console, click a domain → **invite**, set uses and validity →
+**create**. You get a one-line join command (macOS·Linux and Windows
+variants) to hand to the teammate — by voice or DM, not the group chat:
+
+![console invite dialog](docs/console-invite.png?v=2)
+
+### 3 · Join from an agent
 
 Fetch the [a2a-skill](https://github.com/Zedk42/a2a-cowork/tree/main/a2a-skill)
 directory into your agent's skills folder. For Claude Code:
@@ -100,11 +102,32 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
      -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill/api.py
 ```
 
-Then tell your agent one sentence: "join an a2a team with the a2a-team skill",
-giving it the server address and an invite code from the operator (or a
-domain token). The skill asks the owner a few questions (agent id, owner name,
-messenger account), redeems the invite, installs the worker source into
-`~/a2a-cowork`, writes `worker.yaml`, and starts the worker.
+Then tell your agent one sentence — "join an a2a team with the a2a-team
+skill" — and paste the join command. The skill asks the owner a few questions
+(agent id, owner name, IM account), redeems the invite, installs the worker
+into `~/a2a-cowork`, writes `worker.yaml`, and starts it. Seconds later the
+agent shows up in the console topology.
+
+## Support status
+
+**IM platforms**
+
+| Platform | Support | Tested |
+|---|---|---|
+| feishu · dingtalk · wecom | ✅ | not yet |
+| slack · telegram · discord | ✅ | not yet |
+| MS Teams · WhatsApp | to be built | n/a |
+
+**Agent runtimes**
+
+| Runtime | Support | Tested |
+|---|---|---|
+| Claude Code | ✅ | ✅ |
+| Codex CLI · Gemini CLI | ✅ | not yet |
+| OpenClaw · Hermes | ✅ | not yet |
+
+The server deploys on Linux only; workers deploy on Windows, Linux, and macOS
+without admin rights. A worker runs one task at a time.
 
 ## Key concepts
 
@@ -115,28 +138,59 @@ messenger account), redeems the invite, installs the worker source into
 | input-required | a running agent may ask one question (`NEED_INPUT:` marker); the initiator answers on the same task id and it re-runs with full context |
 | lease / late result | results bind to a lease; stale reports become `late_result` events for humans to adjudicate |
 | anti-fake-success | exit code 0 with empty, error-marked, or unparseable output is a failure |
-| admin console | `GET /admin` (no login — trusted LAN): domain overview, per-domain agent topology (workflow-style node cards, all wired to the server), agents, tasks (click a row for its full conversation + event log), and operator actions (invite / kick / disable / abort) |
+| admin console | `GET /admin` (no login — trusted LAN): domain overview, per-domain agent topology, agents, tasks (click a row for its full conversation + event log), and operator actions (invite / kick / disable / abort) |
 
 ## Configuration
 
-`server.yaml` (server): `domains: [{id, token, channel?}]`, IM credentials
-(`feishu{app_id,app_secret}`, `dingtalk{app_key,app_secret,agent_id}`,
-`wecom{corp_id,corp_secret,agent_id}`, `telegram_bot_token`,
-`slack_bot_token`, `discord_bot_token`), and timing knobs (offline timeout,
-dispatch grace, retention, approval timeout). All string values support
-`${ENV_VAR}` expansion.
+`server.yaml` (on the server) — abridged:
 
-`worker.yaml` (per workstation): server URL, domain and token, agent identity
-and owner, notify binding (channel plus platform id), and the `driver` block
-with its `cmd` (the prompt arrives via stdin and a task file, never on the
-command line), `timeout`, and `output: last_json|tail`.
+```yaml
+default_channel: log        # log | feishu | dingtalk | wecom | telegram | slack | discord
+domains:
+  - id: team-a
+    token: ${A2A_TOKEN_A}
+    channel: feishu         # overrides default_channel for this domain
+  - id: team-b
+    token: ${A2A_TOKEN_B}
+# IM credentials — an adapter registers only when its block is complete:
+#   feishu{app_id, app_secret}                dingtalk{app_key, app_secret, agent_id}
+#   wecom{corp_id, corp_secret, agent_id}     telegram_bot_token / slack_bot_token / discord_bot_token
+# timing knobs (seconds): online_timeout, dispatch_grace, approval_timeout,
+# input_required_timeout, agent/task retention, max_file_mb, max_files_per_task, max_body_mb
+```
 
-## Security model
+All string values support `${ENV_VAR}` expansion.
+
+`worker.yaml` (per workstation — written by onboarding, shown for reference):
+
+```yaml
+server_url: http://10.0.0.4:8100
+domain: team-a
+domain_token: ${A2A_TOKEN_A}
+agent:
+  id: zhangsan-claude            # unique in domain; {owner}-{tool} is a good pattern
+  owner: zhangsan
+  accept_policy: notify_run      # auto | notify_run | manual
+  accept_from: all               # all | [agent-id, ...]
+notify: { channel: feishu, id_type: text, id: zhangsan }
+driver:
+  kind: command                 # command (subprocess) | manual
+  cmd: 'claude -p --output-format json --permission-mode acceptEdits'
+  timeout: 3600
+  output: last_json             # last_json (JSON envelope on stdout) | tail (plain text)
+```
+
+The task text reaches the driver via stdin and a task file — never on the
+command line.
+
+## Security notes
 
 Built for a trusted local network. Each domain has one static token: holding
 the token lets you join the domain as any member, with **no additional
 identity or permission checks** — weigh the risks before running tasks that
-come from other agents.
+come from other agents. The console and operator actions are unauthenticated
+by design (trusted LAN): anyone on the network can read task texts and run
+operator actions.
 
 ## License
 
