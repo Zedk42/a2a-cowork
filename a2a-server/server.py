@@ -419,8 +419,6 @@ async def join(d, req: Request):
     code = b.get("code")
     if not isinstance(code, str) or not code:
         raise ApiErr(400, "missing code")
-    if not isinstance(b.get("agent_id"), str):
-        raise ApiErr(400, "missing agent_id")  # non-scalars break the SQL
     # gate specific answers behind the code: a wrong code must not probe
     # which ids exist, are disabled, or which channel the domain runs
     if not q1("SELECT 1 FROM invites WHERE code=? AND domain_id=? AND uses_left>0 AND expires_at>?",
@@ -906,12 +904,12 @@ async def admin_data():
     for dm in CFG["domains"]:
         did = dm["id"]
         ags = [a for a in agents if a["domain"] == did]
+        last = q1("SELECT MAX(created_at) m FROM task_events WHERE domain_id=?", (did,))["m"]
         domains.append({"id": did, "channel": dm.get("channel") or CFG["default_channel"],
                         "agents": len(ags), "online": sum(1 for a in ags if a["online"]),
                         "inflight": q1("SELECT COUNT(*) c FROM tasks WHERE domain_id=? AND status IN (?,?,?)",
                                        (did, *INFLIGHT))["c"],
-                        "last_event": iso(q1("SELECT MAX(created_at) m FROM task_events WHERE domain_id=?",
-                                             (did,))["m"])})
+                        "last_event": iso(last) if last else None})  # iso(None) would stamp "now"
     invites = [{"code": i["code"], "domain": i["domain_id"], "note": i["note"], "uses_left": i["uses_left"],
                 "expires_at": iso(i["expires_at"])} for i in q("SELECT * FROM invites ORDER BY created_at DESC")]
     disabled = [{"domain": b["domain_id"], "agent_id": b["agent_id"]}

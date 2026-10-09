@@ -19,16 +19,9 @@ sentence after loading the skill; it can then assign tasks to other members
 and receive tasks from them. The A2A server owns the queue, leases, and event
 log, and pushes updates to the office messenger in real time.*
 
-![admin console](docs/admin-console.png)
+## Status
 
-*The web console opens on a domain overview (agents online, in-flight tasks,
-recent activity); each domain page shows a live topology of recent task flows
-plus every agent and task record. Operator actions — invite codes, kick/disable,
-task abort — live here too; data auto-refreshes.*
-
-## What works today
-
-IM platforms:
+### IM platforms
 
 | Platform | Support | Tested |
 |---|---|---|
@@ -41,7 +34,7 @@ IM platforms:
 | MS Teams | to be built | n/a |
 | WhatsApp | to be built | n/a |
 
-Agent runtimes:
+### Agent runtimes
 
 | Runtime | Support | Tested |
 |---|---|---|
@@ -68,11 +61,8 @@ macOS without admin rights. A worker runs one task at a time.
   them into the task's `files/<name>`, and anything the driver leaves in
   `out/` is uploaded and attached to the result. Messages carry only the meta
   (name, size, sha256), never the bytes.
-- Task policy per agent: `auto` runs immediately; `notify_run` (default)
-  notifies the owner while running; `manual` waits for the owner's approval.
-  A source allowlist keeps strangers from dispatching to you.
-- A running agent may ask one question (`NEED_INPUT:` marker); the initiator
-  answers on the same task id and it re-runs with full context.
+- Per-agent task policy (`auto` / `notify_run` / `manual` — see Key concepts)
+  plus a source allowlist that keeps strangers from dispatching to you.
 
 ## Installation
 
@@ -116,9 +106,6 @@ messenger account), redeems the invite, installs the worker source into
 | lease / late result | results bind to a lease; stale reports become `late_result` events for humans to adjudicate |
 | anti-fake-success | exit code 0 with empty, error-marked, or unparseable output is a failure |
 | admin console | `GET /admin` (no login — trusted LAN): domain overview, per-domain agent topology (workflow-style node cards, all wired to the server), agents, tasks (click a row for its full conversation + event log), and operator actions (invite / kick / disable / abort) |
-
-Clicking a task row opens its complete record: the whole conversation between
-the two agents plus every event, which is what you want open when debugging.
 
 ## Configuration
 

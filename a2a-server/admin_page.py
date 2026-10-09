@@ -4,10 +4,10 @@ and /admin/op (operator actions: invite / invite_revoke / kick / disable /
 enable / task_abort). Vanilla JS + hand-drawn SVG, no build step, no external assets
 (works fully offline on an intranet); everything user-supplied is rendered via
 textContent, so no HTML escaping is needed. Unauthenticated by design: it
-serves a trusted LAN."""
+serves a trusted LAN. UI is bilingual (EN/中文, toggled in the header)."""
 
 ADMIN_HTML = r"""<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>A2A Co-Work</title>
 <style>
 :root{
@@ -28,9 +28,7 @@ ADMIN_HTML = r"""<!doctype html>
 body{margin:0;background:var(--bg);color:var(--ink);
      font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
 .wrap{max-width:1160px;margin:0 auto;padding:24px 32px 48px}
-/* full-bleed light bar: negative margins cancel the .wrap padding */
-header{position:sticky;top:0;z-index:20;background:var(--card);
-       margin:-24px -32px 24px;padding:0 32px;height:56px;
+header{position:sticky;top:0;z-index:20;background:var(--card);height:56px;padding:0 32px;
        display:flex;justify-content:space-between;align-items:center;
        border-bottom:1px solid var(--line)}
 .brand{display:inline-flex;align-items:center;gap:8px}
@@ -38,6 +36,8 @@ header{position:sticky;top:0;z-index:20;background:var(--card);
 .brand .mark{font:700 16px/1 var(--sans);letter-spacing:-.03em;color:var(--ink)}
 .brand .mark i{font-style:normal;color:var(--accent)}
 .live{display:flex;align-items:center;gap:8px;font:12px var(--sans);color:var(--soft)}
+.hright{display:flex;align-items:center;gap:16px}
+.btn.lang{padding:5px 11px;font-size:12px}
 .pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 2.4s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 @media (prefers-reduced-motion:reduce){.pulse{animation:none}}
@@ -155,27 +155,56 @@ dialog h3{font:600 16px/1.3 var(--sans);margin:0 0 6px}
 #toast.on{opacity:1;transform:translate(-50%,0)}
 @media (max-width:640px){
   .wrap{padding:16px 16px 40px}
-  header{margin:-16px -16px 20px;padding:0 16px}
+  header{padding:0 16px}
 }
 </style></head><body>
-<div class="wrap" id="app">
-  <header>
-    <div class="brand"><span class="mark">a<i>2</i>a</span><span class="bname">cowork</span></div>
+<header>
+  <div class="brand"><span class="mark">a<i>2</i>a</span><span class="bname">cowork</span></div>
+  <div class="hright">
     <div class="live"><span class="pulse"></span><span id="live-note">loading&hellip;</span></div>
-  </header>
+    <button class="btn lang" id="lang">中文</button>
+  </div>
+</header>
+<div class="wrap">
   <main id="view"></main>
   <div id="detail"></div>
 </div>
 <dialog id="dlg">
   <h3 id="dlg-title"></h3>
   <div id="dlg-body"></div>
-  <form class="dlg-acts" method="dialog"><button value="close" class="btn">close</button></form>
+  <form class="dlg-acts" method="dialog"><button value="close" class="btn" id="dlg-close">close</button></form>
 </dialog>
 <div id="toast"></div>
 <script>
 const $ = s => document.querySelector(s);
 const dlg = $("#dlg");
 let DATA = null, view = {d: null, a: null};  // a: selected agent id (survives re-renders)
+
+/* i18n: t(englishString) — zh table maps to Chinese, everything else falls
+through unchanged; one table beats a key scheme when English is the source */
+let LANG = localStorage.getItem("lang") === "zh" ? "zh" : "en";
+const ZH = {
+  "live · 3s": "实时 · 3s", "problem": "异常", "loading…": "加载中…",
+  "Domains": "域列表", "agents online": "agent 在线", "in-flight": "进行中", "last event": "最近事件",
+  "invite": "邀请", "Topology": "拓扑", "Agents": "Agent 列表", "Invites": "邀请码",
+  "Recent tasks": "最近任务", "server": "服务器", "no agents registered": "尚无 agent 注册",
+  "online": "在线", "offline": "离线", "owner": "属主", "policy": "策略", "driver": "驱动",
+  "notify": "通知", "verified": "已验证", "unverified": "未验证",
+  "status": "状态", "code": "邀请码", "note": "备注", "uses left": "剩余次数", "expires": "有效期",
+  "agent": "Agent", "id": "ID",
+  "created": "创建时间", "from": "发起方", "to": "接收方", "reason": "失败原因",
+  "kick": "踢出", "disable": "停用", "enable": "启用", "revoke": "吊销", "abort": "中止",
+  "create": "创建", "close": "关闭", "disabled": "已停用",
+  "block lifted — the agent returns when its worker restarts": "已解除停用——该 agent 的 worker 重启后自动回归",
+  "none": "暂无", "no tasks yet": "暂无任务", "New invite": "新邀请码",
+  "uses": "次数", "valid for (hours)": "有效时长（小时）",
+  "copied": "已复制", "copy failed": "复制失败", "failed": "失败",
+  "just now": "刚刚", "expired": "已过期",
+  "{n}m ago": "{n} 分钟前", "{n}h ago": "{n} 小时前", "{n}d ago": "{n} 天前",
+  "{n}m left": "剩 {n} 分钟", "{n}h left": "剩 {n} 小时", "{n}d left": "剩 {n} 天",
+  "agent topology": "agent 拓扑", "loading": "加载中", "failed to load": "加载失败",
+};
+const t = s => LANG === "zh" ? (ZH[s] || s) : s;
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -204,7 +233,7 @@ function icon(name) {
 }
 function copyText(text) {  // clipboard API is absent on plain-HTTP LAN origins
   if (navigator.clipboard) {
-    navigator.clipboard.writeText(text).then(() => toast("copied"), () => toast("copy failed"));
+    navigator.clipboard.writeText(text).then(() => toast(t("copied")), () => toast(t("copy failed")));
     return;
   }
   const ta = document.createElement("textarea");
@@ -215,7 +244,7 @@ function copyText(text) {  // clipboard API is absent on plain-HTTP LAN origins
   ta.select();
   const ok = document.execCommand("copy");
   ta.remove();
-  toast(ok ? "copied" : "copy failed");
+  toast(ok ? t("copied") : t("copy failed"));
 }
 
 function row(table, cells, header) {
@@ -237,14 +266,16 @@ const LIVE = new Set(["dispatched", "working"]);
 function ago(iso) {
   if (!iso) return "—";
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
-  return s < 60 ? "just now" : s < 3600 ? Math.floor(s / 60) + "m ago"
-       : s < 86400 ? Math.floor(s / 3600) + "h ago" : Math.floor(s / 86400) + "d ago";
+  if (s < 60) return t("just now");
+  const n = s < 3600 ? Math.floor(s / 60) : s < 86400 ? Math.floor(s / 3600) : Math.floor(s / 86400);
+  return t(s < 3600 ? "{n}m ago" : s < 86400 ? "{n}h ago" : "{n}d ago").replace("{n}", n);
 }
 function till(iso) {
   if (!iso) return "—";
   const s = (Date.parse(iso) - Date.now()) / 1000;
-  return s <= 0 ? "expired" : s < 3600 ? Math.floor(s / 60) + "m left"
-       : s < 86400 ? Math.floor(s / 3600) + "h left" : Math.floor(s / 86400) + "d left";
+  if (s <= 0) return t("expired");
+  const n = s < 3600 ? Math.floor(s / 60) : s < 86400 ? Math.floor(s / 3600) : Math.floor(s / 86400);
+  return t(s < 3600 ? "{n}m left" : s < 86400 ? "{n}h left" : "{n}d left").replace("{n}", n);
 }
 
 /* ---------- api ---------- */
@@ -260,16 +291,16 @@ async function op(body) {
   return j;
 }
 function run(fn) {  // do it, refresh, surface failure
-  return fn().then(poll, e => toast("failed: " + (e.message || e)));
+  return fn().then(poll, e => toast(t("failed") + ": " + (e.message || e)));
 }
 
 let toastT;
 function toast(msg) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.classList.add("on");
+  const box = $("#toast");
+  box.textContent = msg;
+  box.classList.add("on");
   clearTimeout(toastT);
-  toastT = setTimeout(() => t.classList.remove("on"), 2600);
+  toastT = setTimeout(() => box.classList.remove("on"), 2600);
 }
 
 /* ---------- routing + refresh ---------- */
@@ -310,9 +341,9 @@ async function poll() {
     if (!r.ok) throw new Error("HTTP " + r.status);
     DATA = await r.json();
     render();
-    $("#live-note").textContent = "live · 3s";
+    $("#live-note").textContent = t("live · 3s");
   } catch (e) {
-    $("#live-note").textContent = "problem: " + (e.message || e);
+    $("#live-note").textContent = t("problem") + ": " + (e.message || e);
   }
 }
 
@@ -325,16 +356,16 @@ function stat(n, l, hot) {
 }
 function dstats(dm) {
   const st = el("div", "dstats");
-  st.append(stat(`${dm.online}/${dm.agents}`, "agents online"),
-            stat(String(dm.inflight), "in-flight", dm.inflight > 0),
-            stat(ago(dm.last_event), "last event"));
+  st.append(stat(`${dm.online}/${dm.agents}`, t("agents online")),
+            stat(String(dm.inflight), t("in-flight"), dm.inflight > 0),
+            stat(ago(dm.last_event), t("last event")));
   return st;
 }
 
 function overview(d) {
   const frag = document.createDocumentFragment();
   const head = el("div", "sec-head");
-  head.append(el("h2", null, "Domains"));
+  head.append(el("h2", null, t("Domains")));
   const grid = el("div", "domains");
   for (const dm of d.domains) {
     const c = el("div", "dcard");
@@ -354,11 +385,11 @@ function detailView(d, did) {
   const dm = d.domains.find(x => x.id === did);
   const frag = document.createDocumentFragment();
   const back = el("a", "back");
-  back.append(icon("left"), el("span", null, "domains"));
+  back.append(icon("left"), el("span", null, t("Domains")));
   back.setAttribute("href", "#/");
   const head = el("div", "domhead");
   const invite = el("button", "btn pri");
-  invite.append(icon("plus"), el("span", null, "invite"));
+  invite.append(icon("plus"), el("span", null, t("invite")));
   invite.onclick = () => inviteDialog(did);
   head.append(el("h2", "dtitle", did), dstats(dm), invite);
   frag.append(back, head, topoSection(d, did));
@@ -378,7 +409,7 @@ function svgEl(tag, attrs, parent) {
 function topoSVG(d, did) {
   // hub-and-spoke: agents long-poll the server, never each other
   const W = 940, H = 470, cx = W / 2, cy = H / 2 + 4, BW = 132, BH = 40;
-  const svg = svgEl("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "agent topology"});
+  const svg = svgEl("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": t("agent topology")});
   const defs = svgEl("defs", null, svg);
   const lift = svgEl("filter", {id: "lift", x: "-40%", y: "-40%", width: "180%", height: "180%"}, defs);
   svgEl("feDropShadow", {dx: 0, dy: 1.5, stdDeviation: 2, "flood-color": "#101828", "flood-opacity": .13}, lift);
@@ -387,8 +418,8 @@ function topoSVG(d, did) {
   const step = 2 * Math.PI / Math.max(ags.length, 1);
   const rx = Math.min(370, 190 + ags.length * 20), ry = 150;
   ags.forEach((a, i) => {
-    const t = -Math.PI / 2 + i * step;
-    pos.set(a.agent_id, {x: cx + rx * Math.cos(t), y: cy + ry * Math.sin(t)});
+    const ang = -Math.PI / 2 + i * step;
+    pos.set(a.agent_id, {x: cx + rx * Math.cos(ang), y: cy + ry * Math.sin(ang)});
   });
   svgEl("ellipse", {cx, cy, rx, ry, class: "orbit"}, svg);
   const rim = (ux, uy) => Math.min(BW / 2 / (Math.abs(ux) || 1e-9), BH / 2 / (Math.abs(uy) || 1e-9));
@@ -401,7 +432,7 @@ function topoSVG(d, did) {
   }
   const srv = svgEl("g", {class: "srv"}, svg);
   svgEl("rect", {x: cx - 38, y: cy - 17, width: 76, height: 34, rx: 8, filter: "url(#lift)"}, srv);
-  svgEl("text", {x: cx, y: cy + 4, "text-anchor": "middle", class: "tsrv"}, srv).textContent = "server";
+  svgEl("text", {x: cx, y: cy + 4, "text-anchor": "middle", class: "tsrv"}, srv).textContent = t("server");
   for (const a of ags) {
     const p = pos.get(a.agent_id);
     const g = svgEl("g", {class: "tnode" + (view.a === a.agent_id ? " sel" : ""), transform: `translate(${p.x},${p.y})`}, svg);
@@ -419,7 +450,7 @@ function topoSVG(d, did) {
     }
   }
   if (!ags.length)
-    svgEl("text", {x: cx, y: cy, "text-anchor": "middle", class: "towner"}, svg).textContent = "no agents registered";
+    svgEl("text", {x: cx, y: cy, "text-anchor": "middle", class: "towner"}, svg).textContent = t("no agents registered");
   return svg;
 }
 
@@ -435,7 +466,7 @@ function section(title, cardCls) {
 }
 
 function topoSection(d, did) {
-  const [sec, card] = section("Topology", "topo");
+  const [sec, card] = section(t("Topology"), "topo");
   card.append(topoSVG(d, did));
   const panel = el("div", "tpanel");
   panel.id = "tpanel";
@@ -451,28 +482,28 @@ function showAgent(d, did, a) {
   p.innerHTML = "";
   const head = el("div");
   head.append(el("span", "tp-name", a.agent_id),
-              span(a.online ? "tag green" : "tag gray", a.online ? "online" : "offline"));
+              span(a.online ? "tag green" : "tag gray", a.online ? t("online") : t("offline")));
   p.append(head);
   const meta = el("div", "tp-meta");
-  for (const [k, v] of [["owner", a.owner], ["policy", a.accept_policy],
-                        ["driver", a.driver_kind], ["notify", a.notify_verified ? "verified" : "unverified"]]) {
+  for (const [k, v] of [[t("owner"), a.owner], [t("policy"), a.accept_policy],
+                        [t("driver"), a.driver_kind], [t("notify"), a.notify_verified ? t("verified") : t("unverified")]]) {
     meta.append(el("span", "k", k), el("span", "v", v));
   }
   p.append(meta);
   if (a.description) p.append(el("p", "tp-desc", a.description));
   const mine = d.tasks.filter(k => k.domain === did && (k.initiator === a.agent_id || k.target === a.agent_id)).slice(0, 6);
   if (mine.length) {
-    const t = el("table", "tp-tasks");
+    const tb = el("table", "tp-tasks");
     for (const k of mine)
-      row(t, [k.created_at.slice(5, 16),
-              (k.initiator === a.agent_id ? "to " : "from ") + (k.initiator === a.agent_id ? k.target : k.initiator),
-              span("tag " + (TAG[k.status] || "gray"), k.status)]);
-    p.append(t);
+      row(tb, [k.created_at.slice(5, 16).replace("T", " "),
+               (k.initiator === a.agent_id ? "→ " : "← ") + (k.initiator === a.agent_id ? k.target : k.initiator),
+               span("tag " + (TAG[k.status] || "gray"), k.status)]);
+    p.append(tb);
   }
   const acts = el("div", "tp-acts");
   const close = el("button", "btn");
   close.append(icon("x"));
-  close.setAttribute("aria-label", "close");
+  close.setAttribute("aria-label", t("close"));
   close.onclick = () => { view.a = null; p.hidden = true; };
   acts.append(close, ...agentActs(d, did, a.agent_id));
   p.append(acts);
@@ -484,75 +515,81 @@ function mkBtn(label, cls, fn, ico) {
   const b = el("button", "btn " + (cls || ""));
   if (ico) b.append(icon(ico));
   if (label) b.append(el("span", null, label));
-  b.onclick = e => { e.stopPropagation(); fn(); };
+  b.onclick = e => {  // hold the button until the op settles; a second click would re-fire it
+    e.stopPropagation();
+    b.disabled = true;
+    Promise.resolve(fn()).finally(() => { b.disabled = false; });
+  };
   return b;
 }
 function agentActs(d, did, id) {
-  return [mkBtn("kick", "", () => run(() => op({op: "kick", domain: did, agent_id: id})), "kick"),
-          mkBtn("disable", "danger", () => run(() => op({op: "disable", domain: did, agent_id: id})), "disable")];
+  return [mkBtn(t("kick"), "", () => run(() => op({op: "kick", domain: did, agent_id: id})), "kick"),
+          mkBtn(t("disable"), "danger", () => run(() => op({op: "disable", domain: did, agent_id: id})), "disable")];
 }
 
 function agentsSection(d, did) {
-  const [sec, card] = section("Agents", "tbl");
-  const t = el("table");
-  row(t, ["agent", "owner", "status", "policy", "driver", ""], true);
+  const [sec, card] = section(t("Agents"), "tbl");
+  const tb = el("table");
+  row(tb, [t("agent"), t("owner"), t("status"), t("policy"), t("driver"), ""], true);
   for (const a of d.agents.filter(a => a.domain === did)) {
-    const tr = row(t, [span("name", a.agent_id), a.owner,
-                       [span(a.online ? "dot on" : "dot off"), a.online ? "online" : "offline"],
+    const tr = row(tb, [span("name", a.agent_id), a.owner,
+                       [span(a.online ? "dot on" : "dot off"), a.online ? t("online") : t("offline")],
                        a.accept_policy, a.driver_kind, agentActs(d, did, a.agent_id)]);
     tr.classList.add("arow");
     tr.onclick = e => { if (!e.target.closest("button")) showAgent(d, did, a); };
   }
   for (const b of d.disabled.filter(b => b.domain === did))
-    row(t, [span("name", b.agent_id), "", span("tag red", "disabled"), "", "",
-            mkBtn("enable", "", () => run(() => op({op: "enable", domain: did, agent_id: b.agent_id})
-                .then(() => toast("block lifted — the agent returns when its worker restarts"))), "enable")])
+    row(tb, [span("name", b.agent_id), "", span("tag red", t("disabled")), "", "",
+             mkBtn(t("enable"), "", () => run(() => op({op: "enable", domain: did, agent_id: b.agent_id})
+                 .then(() => toast(t("block lifted — the agent returns when its worker restarts")))), "enable")])
         .classList.add("brow");
-  if (!d.agents.some(a => a.domain === did) && !d.disabled.some(b => b.domain === did)) noteRow(t, "none", 6);
-  card.append(t);
+  if (!d.agents.some(a => a.domain === did) && !d.disabled.some(b => b.domain === did)) noteRow(tb, t("none"), 6);
+  card.append(tb);
   return sec;
 }
 
-function noteRow(t, text, n) {
+function noteRow(tb, text, n) {
   const tr = document.createElement("tr");
   const td = document.createElement("td");
   td.colSpan = n;
   td.append(el("span", "note", text));
   tr.append(td);
-  t.append(tr);
+  tb.append(tr);
 }
 
 function invitesSection(d, did) {
-  const [sec, card] = section("Invites", "tbl");
-  const t = el("table");
-  row(t, ["code", "note", "uses left", "expires", ""], true);
+  const [sec, card] = section(t("Invites"), "tbl");
+  const tb = el("table");
+  row(tb, [t("code"), t("note"), t("uses left"), t("expires"), ""], true);
   const invs = d.invites.filter(i => i.domain === did);
   for (const i of invs)
-    row(t, [span("mono", i.code), i.note || "", String(i.uses_left), till(i.expires_at),
-            mkBtn("revoke", "", () => run(() => op({op: "invite_revoke", code: i.code})), "x")]);
-  if (!invs.length) noteRow(t, "none", 5);
-  card.append(t);
+    row(tb, [span("mono", i.code), i.note || "", String(i.uses_left), till(i.expires_at),
+             mkBtn(t("revoke"), "", () => run(() => op({op: "invite_revoke", code: i.code})), "x")]);
+  if (!invs.length) noteRow(tb, t("none"), 5);
+  card.append(tb);
   return sec;
 }
 
 function tasksSection(d, did) {
-  const [sec, card] = section("Recent tasks", "tbl");
-  const t = el("table");
+  const [sec, card] = section(t("Recent tasks"), "tbl");
+  const tb = el("table");
   const tks = d.tasks.filter(k => k.domain === did);
-  const cols = ["created", "id", "from", "to", "status"].concat(tks.some(k => k.fail_reason) ? ["reason"] : [], [""]);
-  row(t, cols, true);
+  const showReason = tks.some(k => k.fail_reason);
+  const cols = [t("created"), t("id"), t("from"), t("to"), t("status")]
+      .concat(showReason ? [t("reason")] : [], [""]);
+  row(tb, cols, true);
   for (const k of tks) {
-    const cells = [k.created_at.slice(5, 16), span("name", k.id.slice(0, 8)), k.initiator, k.target,
+    const cells = [k.created_at.slice(5, 16).replace("T", " "), span("name", k.id.slice(0, 8)), k.initiator, k.target,
                    span("tag " + (TAG[k.status] || "gray"), k.status)];
-    if (cols.includes("reason")) cells.push(k.fail_reason || "");
+    if (showReason) cells.push(k.fail_reason || "");
     cells.push(TERMINAL.has(k.status) ? ""
-              : mkBtn("abort", "", () => run(() => op({op: "task_abort", domain: did, task_id: k.id})), "abort"));
-    const tr = row(t, cells);
+              : mkBtn(t("abort"), "", () => run(() => op({op: "task_abort", domain: did, task_id: k.id})), "abort"));
+    const tr = row(tb, cells);
     tr.classList.add("tk");
     tr.onclick = e => { if (!e.target.closest("button")) showTask(k.id); };
   }
-  if (!tks.length) noteRow(t, "no tasks yet", cols.length);
-  card.append(t);
+  if (!tks.length) noteRow(tb, t("no tasks yet"), cols.length);
+  card.append(tb);
   return sec;
 }
 
@@ -564,16 +601,16 @@ function fld(label, val, parent) {
   const i = el("input");
   i.value = val;
   w.append(i);
-  if (parent) parent.append(w);
+  parent.append(w);
   return i;  // the input, not the wrapping label
 }
 
 function inviteDialog(did) {
   const body = $("#dlg-body");
   body.innerHTML = "";
-  $("#dlg-title").textContent = "New invite — " + did;
-  const uses = fld("uses", "1", body), hours = fld("valid for (hours)", "24", body), note = fld("note", "", body);
-  const create = mkBtn("create", "pri", null, "plus");
+  $("#dlg-title").textContent = t("New invite") + " — " + did;
+  const uses = fld(t("uses"), "1", body), hours = fld(t("valid for (hours)"), "24", body), note = fld(t("note"), "", body);
+  const create = mkBtn(t("create"), "pri", null, "plus");
   create.style.marginTop = "12px";
   create.onclick = async () => {
     create.disabled = true;  // a double click would mint two codes, one orphaned
@@ -592,10 +629,10 @@ function inviteDialog(did) {
       c1.onclick = () => copyText(c1.textContent);
       c2.onclick = () => copyText(c2.textContent);
       body.append(c1, c2);
-      body.append(el("p", "dlg-sub", `${r.uses} use${r.uses > 1 ? "s" : ""} · ${till(r.expires_at)}`));
+      body.append(el("p", "dlg-sub", `${r.uses}× · ${till(r.expires_at)}`));
     } catch (e) {
       create.disabled = false;
-      toast("failed: " + (e.message || e));
+      toast(t("failed") + ": " + (e.message || e));
     }
   };
   body.append(create);
@@ -607,7 +644,7 @@ function inviteDialog(did) {
 async function showTask(id) {
   const detail = $("#detail");
   detail.style.display = "block";
-  detail.textContent = `loading ${id} …`;
+  detail.textContent = t("loading") + " " + id + " …";
   try {
     const r = await api(`/admin/task/${id}`);
     const d = await r.json();
@@ -618,13 +655,26 @@ async function showTask(id) {
     detail.textContent = lines.join("\n");
     detail.scrollIntoView({block: "nearest", behavior: "smooth"});
   } catch (e) {
-    detail.textContent = `failed to load ${id}: ${e}`;
+    detail.textContent = t("failed to load") + " " + id + ": " + e;
   }
 }
 
 
 /* ---------- boot ---------- */
 
+function applyLang() {  // header + dialog shell are static HTML; the rest re-renders
+  $("#lang").textContent = LANG === "zh" ? "EN" : "中文";
+  document.documentElement.lang = LANG;
+  $("#dlg-close").textContent = t("close");
+  if (!DATA) $("#live-note").textContent = t("loading…");
+}
+$("#lang").onclick = () => {
+  LANG = LANG === "zh" ? "en" : "zh";
+  try { localStorage.setItem("lang", LANG); } catch {}  // storage may be blocked
+  applyLang();
+  render();
+};
+applyLang();
 route();
 poll();
 window.__pollId = setInterval(poll, 3000);  // exposed so console captures can pause auto-refresh

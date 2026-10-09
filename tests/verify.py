@@ -555,6 +555,8 @@ def server_checks():
     check("admin/domains-summary",
           any(dm["id"] == "team-a" and dm["agents"] >= 1 and dm["inflight"] >= 0 for dm in ad.get("domains", []))
           and isinstance(ad.get("invites"), list) and isinstance(ad.get("disabled"), list), ad.get("domains"))
+    tb = next((dm for dm in ad.get("domains", []) if dm["id"] == "team-b"), {})
+    check("admin/eventless-domain-last-event-none", tb.get("last_event") is None, tb)  # iso(None) once stamped "now"
 
 
 # ---------- worker process ----------

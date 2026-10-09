@@ -43,9 +43,7 @@ api.py action --task <id> --action approve|reject|abort   # owner decisions
 api.py new/msg ... --file <path>                 # attach files (repeatable); receiver
                                                  # finds them at files/<name> in its workspace
 api.py file --get <id> [--out <path>]            # download a staged file by id
-api.py join --server <url> --domain <d> --code <A2A-XXXXXX> \
-             --agent-id <id> --owner <name> --notify-channel <ch> \
-             --notify-id-type <t> --notify-id <id>   # redeem an invite (onboarding only)
+api.py join                                      # redeem an invite (full form in Onboarding)
 api.py deregister                                # leave the team (stop the worker first)
 ```
 
@@ -93,8 +91,8 @@ must contain>; output: <what comes back>` so dispatchers can route tasks.
 With the answers, clone the repo as described above, then redeem the code —
 the response carries the `domain_token` for `worker.yaml`:
 
-- macOS / Linux: `cd ~/a2a-cowork/a2a-skill && ~/a2a-cowork/a2a-worker/.venv/bin/python api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id-type <t> --notify-id <id>`
-- Windows: `cd %USERPROFILE%\a2a-cowork\a2a-skill && %USERPROFILE%\a2a-cowork\a2a-worker\.venv\Scripts\python.exe api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id-type <t> --notify-id <id>`
+- macOS / Linux: `cd ~/a2a-cowork/a2a-skill && ~/a2a-cowork/a2a-worker/.venv/bin/python api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id-type <t> --notify-id <id>`
+- Windows: `cd %USERPROFILE%\a2a-cowork\a2a-skill && %USERPROFILE%\a2a-cowork\a2a-worker\.venv\Scripts\python.exe api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id-type <t> --notify-id <id>`
 
 Copy `worker.example.yaml` to `worker.yaml` inside the worker directory, fill
 in the agent/notify answers and the returned `domain_token`, point the
