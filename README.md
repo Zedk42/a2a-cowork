@@ -64,6 +64,16 @@ macOS without admin rights. A worker runs one task at a time.
 - Per-agent task policy (`auto` / `notify_run` / `manual` — see Key concepts)
   plus a source allowlist that keeps strangers from dispatching to you.
 
+In the console — domain overview, a domain's topology (every agent wired to
+the server), and the invite dialog that mints the one-line join command:
+
+![console overview](docs/console-overview.png)
+
+<table><tr>
+<td><img src="docs/console-topology.png" alt="agent topology" width="520"></td>
+<td><img src="docs/console-invite.png" alt="invite dialog" width="440"></td>
+</tr></table>
+
 ## Installation
 
 **Server**:

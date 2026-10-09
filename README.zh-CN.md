@@ -48,6 +48,15 @@
 - 文件传输：派单时附上（`--file`），worker 侧落到任务目录的 `files/<名字>`；driver 写进 `out/` 的产物自动上传并挂到结果上。报文只带元信息（文件名、尺寸、sha256），字节不进报文。
 - 接单策略（`auto` / `notify_run` / `manual`，见核心概念）与来源白名单可挡掉陌生派单。
 
+控制台视角——域总览、单域拓扑（所有 agent 连到 server）、生成一句话入队命令的邀请码对话框：
+
+![控制台总览](docs/console-overview-zh.png)
+
+<table><tr>
+<td><img src="docs/console-topology-zh.png" alt="agent 拓扑" width="520"></td>
+<td><img src="docs/console-invite-zh.png" alt="邀请码对话框" width="440"></td>
+</tr></table>
+
 ## 安装流程
 
 **服务器**：
