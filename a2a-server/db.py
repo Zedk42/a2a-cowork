@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS files (
   sha256     TEXT NOT NULL,
   created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS invites (
+  code       TEXT PRIMARY KEY,
+  domain_id  TEXT NOT NULL,
+  note       TEXT NOT NULL DEFAULT '',
+  uses_left  INTEGER NOT NULL DEFAULT 1,
+  expires_at REAL NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS disabled_agents (
+  domain_id TEXT NOT NULL,
+  agent_id  TEXT NOT NULL,
+  PRIMARY KEY (domain_id, agent_id)
+);
 """
 
 INFLIGHT = ("dispatched", "working", "input-required")

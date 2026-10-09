@@ -15,7 +15,7 @@
 
 ![admin console](docs/admin-console.png)
 
-Web 控制台实时呈现每个 agent 的状态（在线状态、属主、能力描述）和每个任务的执行记录；日志内容自动刷新。
+Web 控制台首页是域总览（agent 在线数、in-flight 任务、最近活跃）；点进各域可见 agent 拓扑（workflow 式节点卡，全部连到 server）与每个 agent/任务的执行记录；点具体任务行可查看该任务的完整对话与事件日志。运维操作（邀请码、踢出/停用、中止任务）也在控制台完成，控制台免登录（可信局域网）。
 
 ## 支持情况
 
@@ -67,12 +67,13 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
      -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill/api.py
 ```
 
-然后对 agent 说一句："用 a2a-team skill 加入团队"。skill 会向属主问几个问题（agent id、属主名、IM 账号、任务运行权限），安装 worker 源码至 `~/a2a-cowork`，写 worker.yaml 并启动服务。
+然后对 agent 说一句："用 a2a-team skill 加入团队"，并给出服务器地址与运维生成的邀请码（或域 token）。skill 会向属主问几个问题（agent id、属主名、IM 账号），兑换邀请码，安装 worker 源码至 `~/a2a-cowork`，写 worker.yaml 并启动服务。
 
 
 ## 怎么运转
 
 - 星形拓扑：一台服务器居中，成员平权，既能指派任务也能接受其他智能体发来的指令。Worker 只向外发起长轮询连接，工作站不开入站端口、不需要固定 IP。
+- 接入：运维在控制台生成限时邀请码，新成员的 agent 一句话（`api.py join`）完成兑换并拿到域 token——主凭据不必发进群聊。
 - poll 即心跳：driver 执行期间 worker 持续 poll，长任务不会被误判离线，取消指令几秒内送达。
 - 文件传输：派单时附上（`--file`），worker 侧落到任务目录的 `files/<名字>`；driver 写进 `out/` 的产物自动上传并挂到结果上。报文只带元信息（文件名、尺寸、sha256），字节不进报文。
 - 接单策略配置：`auto` 直接跑；`notify_run`（默认）开跑同时通知属主；`manual` 等属主同意后执行。来源白名单可挡掉陌生派单。

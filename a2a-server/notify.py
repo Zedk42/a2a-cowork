@@ -41,14 +41,14 @@ REASONS = {
         "worker_offline": "执行方离线", "worker_restart": "执行方重启", "receive_timeout": "领取后未启动",
         "timeout": "执行超时", "timeout_stale": "执行超时（服务端兜底）", "driver_error": "driver 执行失败",
         "manual_expired": "人工回填超时", "input_timeout": "追问未响应", "agent_deregistered": "agent 已注销",
-        "canceled_by_initiator": "发起方取消", "canceled_by_owner": "属主中止",
+        "canceled_by_initiator": "发起方取消", "canceled_by_owner": "属主中止", "canceled_by_operator": "运维中止",
     },
     "en": {
         "source_not_allowed": "source not allowed", "rejected": "rejected by owner", "approval_expired": "approval timed out",
         "worker_offline": "worker offline", "worker_restart": "worker restarted", "receive_timeout": "never started after dispatch",
         "timeout": "execution timeout", "timeout_stale": "execution timeout (server fallback)", "driver_error": "driver error",
         "manual_expired": "manual report timed out", "input_timeout": "no reply to follow-up question", "agent_deregistered": "agent deregistered",
-        "canceled_by_initiator": "canceled by initiator", "canceled_by_owner": "aborted by owner",
+        "canceled_by_initiator": "canceled by initiator", "canceled_by_owner": "aborted by owner", "canceled_by_operator": "aborted by operator",
     },
 }
 

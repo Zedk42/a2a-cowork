@@ -335,7 +335,8 @@ def server_checks():
 
     # isolation + input validation at the trust boundary
     check("isolation/wrong-domain-token", call("GET", "/domains/team-b/agents")[0] == 401)
-    check("isolation/admin-token", call("GET", "/admin?token=wrong", token="")[0] == 401)
+    # the console serves the trusted LAN unauthenticated
+    check("admin/open-no-auth", status_only("/admin") == 200 and call("GET", "/admin/data")[0] == 200)
     s, r = call("POST", "/domains/team-a/tasks", [1, 2, 3], agent="boss")
     check("validation/non-dict-body->400", s == 400, (s, r))
     s, r = call("POST", "/domains/team-a/tasks", {"target": "w", "text": 123}, agent="boss")
@@ -381,15 +382,13 @@ def server_checks():
     sql("UPDATE agents SET last_seen_at=NULL WHERE agent_id='w2'")
     s, agents = call("GET", "/domains/team-a/agents")
     check("robust/null-last-seen-no-500", s == 200 and any(a["agent_id"] == "w2" and a["online"] is False for a in agents), (s, agents))
-    check("robust/admin-null-last-seen-no-500", status_only("/admin?token=admtok") == 200)
-    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/admin/data?token=admtok", timeout=10) as x:
-        ad = json.loads(x.read())
+    check("robust/admin-null-last-seen-no-500", status_only("/admin") == 200)
+    _, ad = call("GET", "/admin/data")
     check("robust/admin-data-snapshot", any(a["agent_id"] == "w2" and a["online"] is False for a in ad["agents"])
-          and isinstance(ad["events"], list), ad.get("agents"))
+          and isinstance(ad["domains"], list), ad.get("agents"))
     f = wait_status(tid, "failed", timeout=15)
     check("robust/null-last-seen-treated-offline", f.get("fail_reason") == "worker_offline", f)
-    with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/admin/task/{tid}?token=admtok", timeout=10) as x:
-        at = json.loads(x.read())
+    _, at = call("GET", f"/admin/task/{tid}")
     check("robust/admin-task-detail", at.get("id") == tid and at.get("convo") and at.get("events"), at.get("id"))
 
     # ---------- sweep & ordering mechanisms (FIFO, restart detection, timeouts, retention) ----------
@@ -483,6 +482,79 @@ def server_checks():
     ev = q1("SELECT payload FROM task_events WHERE task_id='reg:gone' AND type='notify'")
     check("sweep/agent-cleaned", not q1("SELECT 1 FROM agents WHERE agent_id='gone'")
           and ev and "u12" in ev["payload"], ev)
+
+    # ---------- operator surface: invites (join), disable, kick, abort ----------
+    s, r = call("POST", "/admin/op", {"op": "invite", "domain": "team-a", "uses": 1, "hours": 1, "note": "seed"})
+    code = r.get("code") if s == 200 else None
+    check("op/invite-created", s == 200 and code and code.startswith("A2A-") and len(code) == 12, (s, r))
+    # a code must never take over a registered identity (register_core REPLACEs the row)
+    check("join/takeover-refused", call("POST", "/domains/team-a/join",
+                                        {"code": code, "agent_id": "w", "owner_username": "u20",
+                                         "notify": {"channel": "log", "id_type": "text", "id": "n20"}})[0] == 409)
+    # nor an existing owner's notification binding (owner impersonation)
+    check("join/owner-hijack-refused", call("POST", "/domains/team-a/join",
+                                            {"code": code, "agent_id": "fresh-agent", "owner_username": "u1",
+                                             "notify": {"channel": "log", "id_type": "text", "id": "evil"}})[0] == 409)
+    s, r = call("POST", "/domains/team-a/join",
+                {"code": code, "agent_id": "joined", "owner_username": "u20", "description": "via invite",
+                 "notify": {"channel": "log", "id_type": "text", "id": "n20"}})
+    check("join/redeems-and-returns-token",
+          s == 200 and r.get("domain_token") == TOKEN and r.get("notify_verified") is True, (s, r))
+    check("join/token-authorizes",
+          call("GET", "/domains/team-a/agents", token=r.get("domain_token") if s == 200 else "-")[0] == 200)
+    jbody = {"agent_id": "joined2", "owner_username": "u21",
+             "notify": {"channel": "log", "id_type": "text", "id": "n21"}}
+    check("join/single-use-burns", call("POST", "/domains/team-a/join", {**jbody, "code": code})[0] == 403)
+    _, inv = call("POST", "/admin/op", {"op": "invite", "domain": "team-a"})
+    sql("UPDATE invites SET expires_at=? WHERE code=?", (time.time() - 1, inv["code"]))
+    check("join/expired-refused", call("POST", "/domains/team-a/join", {**jbody, "code": inv["code"]})[0] == 403)
+    _, inv = call("POST", "/admin/op", {"op": "invite", "domain": "team-a"})
+    call("POST", "/admin/op", {"op": "invite_revoke", "code": inv["code"]})
+    check("join/revoked-refused", call("POST", "/domains/team-a/join", {**jbody, "code": inv["code"]})[0] == 403)
+    # disable denies re-registration even with a valid domain token; enable lifts it
+    check("op/disable", call("POST", "/admin/op",
+                            {"op": "disable", "domain": "team-a", "agent_id": "joined"})[0] == 200)
+    check("disable/register-refused", call("POST", "/domains/team-a/agents/register",
+                                       {"agent_id": "joined", "owner_username": "u20",
+                                        "notify": {"channel": "log", "id_type": "text", "id": "n20"}})[0] == 403)
+    _, inv = call("POST", "/admin/op", {"op": "invite", "domain": "team-a"})
+    check("disable/join-refused", call("POST", "/domains/team-a/join",
+                                   {"code": inv["code"], "agent_id": "joined", "owner_username": "u20",
+                                    "notify": {"channel": "log", "id_type": "text", "id": "n20"}})[0] == 403)
+    # fixable input errors (wrong channel) answer 400 WITHOUT spending the code
+    check("join/invalid-body-keeps-code",
+          call("POST", "/domains/team-a/join",
+               {**jbody, "code": inv["code"], "notify": {"channel": "nope", "id_type": "t", "id": "x"}})[0] == 400)
+    check("join/non-scalar-notify-400",
+          call("POST", "/domains/team-a/join",
+               {**jbody, "code": inv["code"], "notify": {"channel": "log", "id_type": "text", "id": {"evil": 1}}})[0] == 400)
+    check("join/code-still-redeemable", call("POST", "/domains/team-a/join", {**jbody, "code": inv["code"]})[0] == 200)
+    call("POST", "/admin/op", {"op": "enable", "domain": "team-a", "agent_id": "joined"})
+    register("joined", owner="u20")
+    check("disable/enable-lifts", bool(q1("SELECT 1 FROM agents WHERE agent_id='joined'")))
+    # kick = deregister from the console: in-flight fails, the row is gone
+    tid = new_task("joined", "kick me")
+    poll("joined")
+    call("POST", "/admin/op", {"op": "kick", "domain": "team-a", "agent_id": "joined"})
+    f = wait_status(tid, "failed")
+    check("op/kick-fails-inflight",
+          f.get("fail_reason") == "agent_deregistered" and not q1("SELECT 1 FROM agents WHERE agent_id='joined'"), f)
+    tid = new_task("w", "abort me")
+    call("POST", "/admin/op", {"op": "task_abort", "domain": "team-a", "task_id": tid})
+    f = wait_status(tid, "canceled")
+    check("op/task-abort", f.get("fail_reason") == "canceled_by_operator", f)
+    # expired invites leave the table via the sweep
+    _, inv = call("POST", "/admin/op", {"op": "invite", "domain": "team-a"})
+    sql("UPDATE invites SET expires_at=? WHERE code=?", (time.time() - 400, inv["code"]))
+    end = time.time() + 12
+    while time.time() < end and q1("SELECT 1 FROM invites WHERE code=?", (inv["code"],)):
+        time.sleep(0.5)
+    check("sweep/invite-retention", not q1("SELECT 1 FROM invites WHERE code=?", (inv["code"],)))
+    s, r = call("GET", "/admin/data")
+    ad = r if s == 200 else {}
+    check("admin/domains-summary",
+          any(dm["id"] == "team-a" and dm["agents"] >= 1 and dm["inflight"] >= 0 for dm in ad.get("domains", []))
+          and isinstance(ad.get("invites"), list) and isinstance(ad.get("disabled"), list), ad.get("domains"))
 
 
 # ---------- worker process ----------
@@ -737,7 +809,6 @@ domains:
     token: {TOKEN}
   - id: team-b
     token: tok-b
-admin_token: admtok
 default_channel: log
 online_timeout: 10
 poll_wait: 2
@@ -759,7 +830,7 @@ max_body_mb: 1
         up = False
         for _ in range(100):
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{PORT}/admin?token=admtok", timeout=2).read()
+                urllib.request.urlopen(f"http://127.0.0.1:{PORT}/admin", timeout=2).read()
                 up = True
                 break
             except Exception:

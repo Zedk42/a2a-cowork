@@ -3,7 +3,8 @@
 dependency is pyyaml.
 
 Reads connection info from worker.yaml next to this file (or A2A_WORKER_CONFIG).
-Commands: agents | new | get | list | cancel | msg | action | file | deregister
+Commands: agents | new | get | list | cancel | msg | action | file | deregister | join
+(join is standalone: it redeems an invite code before any worker.yaml exists)
 """
 import argparse
 import json
@@ -89,12 +90,23 @@ def main():
     p2 = sub.add_parser("file"); p2.add_argument("--get", required=True, help="download a staged file by id")
     p2.add_argument("--out", default=None, help="local output path (default: stored name)")
     p = sub.add_parser("action"); p.add_argument("--task", required=True); p.add_argument("--action", required=True, choices=["approve", "reject", "abort"])
-    p = sub.add_parser("deregister", help="leave the team (stop your worker first)")
+    sub.add_parser("deregister", help="leave the team (stop your worker first)")
+    p = sub.add_parser("join", help="redeem an invite code; prints the join result incl. domain_token for worker.yaml")
+    p.add_argument("--server", required=True); p.add_argument("--domain", required=True); p.add_argument("--code", required=True)
+    p.add_argument("--agent-id", required=True); p.add_argument("--owner", required=True)
+    p.add_argument("--desc", default=""); p.add_argument("--policy", default="notify_run")
+    p.add_argument("--notify-channel", required=True); p.add_argument("--notify-id-type", required=True); p.add_argument("--notify-id", required=True)
     a = ap.parse_args()
-    cfg = load()
-    d = cfg["domain"]
+    # join runs before any worker.yaml exists — the code IS the credential
+    cfg = {"server_url": a.server.rstrip("/"), "domain_token": ""} if a.cmd == "join" else load()
+    d = a.domain if a.cmd == "join" else cfg["domain"]
     try:
-        if a.cmd == "agents":
+        if a.cmd == "join":
+            body = {"code": a.code, "agent_id": a.agent_id, "owner_username": a.owner,
+                    "description": a.desc, "accept_policy": a.policy,
+                    "notify": {"channel": a.notify_channel, "id_type": a.notify_id_type, "id": a.notify_id}}
+            print(json.dumps(call(cfg, "POST", f"/domains/{d}/join", body), ensure_ascii=False))
+        elif a.cmd == "agents":
             for x in call(cfg, "GET", f"/domains/{d}/agents"):
                 print(f"{'●' if x['online'] else '○'} {x['agent_id']:<24} {x['accept_policy']:<10} {x['driver_kind']:<10} {x['description']}")
         elif a.cmd == "new":

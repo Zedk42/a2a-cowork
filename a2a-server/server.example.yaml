@@ -4,7 +4,6 @@ host: 0.0.0.0
 port: 8100
 language: zh            # zh | en (add a dict in notify.py MESSAGES for more)
 public_base: http://127.0.0.1:8100   # used in notification texts
-admin_token: change-me  # read-only admin page access (?token=)
 db_path: a2a.db
 
 # One IM per domain: each domain entry may set its own `channel`; owners bind on

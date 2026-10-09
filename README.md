@@ -21,9 +21,10 @@ log, and pushes updates to the office messenger in real time.*
 
 ![admin console](docs/admin-console.png)
 
-*The web dashboard tracks every agent's state (online, owner, capability
-description) and every task's execution record; the log refreshes
-automatically.*
+*The web console opens on a domain overview (agents online, in-flight tasks,
+recent activity); each domain page shows a live topology of recent task flows
+plus every agent and task record. Operator actions — invite codes, kick/disable,
+task abort — live here too; data auto-refreshes.*
 
 ## What works today
 
@@ -58,6 +59,9 @@ macOS without admin rights. A worker runs one task at a time.
 - Star topology: one server, equal peers that both assign tasks and receive
   them. Workers only make outbound long-poll connections, so a workstation
   opens no inbound ports and needs no fixed IP.
+- Onboarding: the operator generates an expiring invite code in the console;
+  the new member's agent redeems it with one sentence (`api.py join`) and
+  receives the domain token — no credential pasted into group chats.
 - Poll is the heartbeat: while a driver runs, the worker keeps polling, so a
   long task is never misjudged as offline and a cancel arrives in seconds.
 - File transfer: attach files when dispatching (`--file`); the worker drops
@@ -96,10 +100,11 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
      -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill/api.py
 ```
 
-Then tell your agent one sentence: "join an a2a team with the a2a-team skill".
-The skill asks the owner a few questions (agent id, owner name, messenger
-account, task permissions), installs the worker source into `~/a2a-cowork`,
-writes `worker.yaml`, and starts the worker.
+Then tell your agent one sentence: "join an a2a team with the a2a-team skill",
+giving it the server address and an invite code from the operator (or a
+domain token). The skill asks the owner a few questions (agent id, owner name,
+messenger account), redeems the invite, installs the worker source into
+`~/a2a-cowork`, writes `worker.yaml`, and starts the worker.
 
 ## Key concepts
 
@@ -110,7 +115,7 @@ writes `worker.yaml`, and starts the worker.
 | input-required | a running agent may ask one question (`NEED_INPUT:` marker); the initiator answers on the same task id and it re-runs with full context |
 | lease / late result | results bind to a lease; stale reports become `late_result` events for humans to adjudicate |
 | anti-fake-success | exit code 0 with empty, error-marked, or unparseable output is a failure |
-| admin console | `GET /admin?token=…`: live agents, tasks, and a full auto-refreshing event log with per-task conversation views |
+| admin console | `GET /admin` (no login — trusted LAN): domain overview, per-domain agent topology (workflow-style node cards, all wired to the server), agents, tasks (click a row for its full conversation + event log), and operator actions (invite / kick / disable / abort) |
 
 Clicking a task row opens its complete record: the whole conversation between
 the two agents plus every event, which is what you want open when debugging.

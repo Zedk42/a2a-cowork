@@ -43,6 +43,9 @@ api.py action --task <id> --action approve|reject|abort   # owner decisions
 api.py new/msg ... --file <path>                 # attach files (repeatable); receiver
                                                  # finds them at files/<name> in its workspace
 api.py file --get <id> [--out <path>]            # download a staged file by id
+api.py join --server <url> --domain <d> --code <A2A-XXXXXX> \
+             --agent-id <id> --owner <name> --notify-channel <ch> \
+             --notify-id-type <t> --notify-id <id>   # redeem an invite (onboarding only)
 api.py deregister                                # leave the team (stop the worker first)
 ```
 
@@ -66,36 +69,39 @@ Then check `~/a2a-worker.log` (or `%USERPROFILE%\a2a-worker.log`). If it says
 "another worker for agent", the machine is already onboarded: skip to
 [Dispatching](#dispatching-a-task).
 
-On first setup it needs a `worker.yaml`. If it doesn't already say which server
-and team to join, ask which domain id to join and get its domain token from
-whoever runs the server (the server maintainer sets both). Then ask the owner,
-never guessing from the system (`whoami` output is not a username):
+On first setup it needs a `worker.yaml`. Ask whoever runs the server for one
+sentence with three things: the server address, the domain id, and an **invite
+code** (they generate it in the admin console — limited-use, expiring). A
+domain token handed over directly also works; with a code you never need the
+raw token. Then ask the owner, never guessing from the system (`whoami`
+output is not a username):
 
 1. Agent id: suggest `{owner}-{tool}`, e.g. `zhangsan-claude`.
 2. Owner username for notifications.
 3. Which IM platform they use and their ID on it. The whole domain must be on
    the same platform: the server enforces it. Examples: Feishu email, Telegram
    numeric chat id (open a chat with the bot and /start first), Slack email,
-   DingTalk or WeCom mobile number, Discord numeric user id. Set
-   `notify.channel` to that platform; if registration answers
-   `channel_unavailable`, the platform is not enabled on the server: a domain
-   runs one platform, set server-side, so tell the maintainer.
-4. Accept policy, default `notify_run`:
-   - `auto`: run immediately, notify owner on completion.
-   - `notify_run`: notify owner at arrival (with an abort button) while running.
-   - `manual`: wait for the owner's approve/reject on each task.
-5. A one-line capability description in this shape, so dispatchers can route
-   tasks to the right teammate: `<what it does>; input: <what a task must
-   contain>; output: <what comes back>`, e.g. "refactors python and writes
-   tests; input: repo link + goal + acceptance criteria; output: change summary
-   and test results".
+   DingTalk or WeCom mobile number, Discord numeric user id. If joining
+   answers `channel_unavailable`, the platform is not enabled on the server:
+   a domain runs one platform, set server-side, so tell the maintainer.
+
+Confirm instead of asking cold: the accept policy defaults to `notify_run`
+(notify the owner at arrival, run immediately; alternatives: `auto`,
+`manual`), and the description follows `<what it does>; input: <what a task
+must contain>; output: <what comes back>` so dispatchers can route tasks.
+
+With the answers, clone the repo as described above, then redeem the code —
+the response carries the `domain_token` for `worker.yaml`:
+
+- macOS / Linux: `cd ~/a2a-cowork/a2a-skill && ~/a2a-cowork/a2a-worker/.venv/bin/python api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id-type <t> --notify-id <id>`
+- Windows: `cd %USERPROFILE%\a2a-cowork\a2a-skill && %USERPROFILE%\a2a-cowork\a2a-worker\.venv\Scripts\python.exe api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id-type <t> --notify-id <id>`
 
 Copy `worker.example.yaml` to `worker.yaml` inside the worker directory, fill
-in the answers, point the `driver:` block at this tool (its `cmd` and
-`output` mode — see the examples in `worker.example.yaml`), and start as
-above. The worker registers itself and keeps
-polling. If it warns "notify channel not verified", have the owner re-check
-the ID and restart.
+in the agent/notify answers and the returned `domain_token`, point the
+`driver:` block at this tool (its `cmd` and `output` mode), and start as
+above. The worker re-registers with its driver details on startup. If it
+warns "notify channel not verified", have the owner re-check the ID and
+restart.
 
 Config changes (policy, driver, notify id) require a restart. Stop the old
 worker first with `worker.py stop` (the venv python, any OS; it also kills a

@@ -1,4 +1,4 @@
-import asyncio, hashlib, json, os, re, time, uuid
+import asyncio, hashlib, json, os, re, secrets, time, uuid
 from pathlib import Path
 
 import yaml
@@ -19,7 +19,7 @@ from db import INFLIGHT, connect
 
 DEFAULTS = {
     "host": "0.0.0.0", "port": 8100, "language": "zh", "db_path": "a2a.db",
-    "default_channel": "log", "public_base": "", "admin_token": "", "online_timeout": 90,
+    "default_channel": "log", "public_base": "", "online_timeout": 90,
     "poll_wait": 30, "sweep_interval": 5, "dispatch_grace": 60, "agent_retention": 259200,
     "task_retention": 2592000, "approval_timeout": 1800, "input_required_timeout": 86400,
     "default_task_timeout": 3600, "max_file_mb": 50, "max_files_per_task": 10, "max_body_mb": 2,
@@ -108,6 +108,7 @@ async def any_err(request, exc):  # same rollback duty for uncaught errors (500s
 now = time.time
 AGENT_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")  # ids travel in URL paths and the
 # x-agent-id header: a "/" matches no route (404 poll loop), non-ASCII breaks the header
+INVITE_ABC = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # unambiguous: no 0/O, 1/I/L
 
 
 def iso(ts):
@@ -311,10 +312,18 @@ def remove_agent(a):
 
 # ---------- agent lifecycle ----------
 
-@app.post("/domains/{d}/agents/register")
-async def register(d, req: Request):
-    domain_of(req, d)
-    b = await json_body(req)
+def guard_new(d, b):
+    """join-only rule: a code must never take over a live identity —
+    register_core REPLACEs the agent row and the owner's notify binding."""
+    if q1("SELECT 1 FROM agents WHERE domain_id=? AND agent_id=?", (d, b["agent_id"])):
+        raise ApiErr(409, "agent id already registered — kick it first or pick a new id")
+    if q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (d, b["owner_username"])):
+        raise ApiErr(409, "owner username already in use — pick another")
+
+
+def check_registration(d, b):
+    """Pure input/domain checks, no writes. join runs this BEFORE spending
+    the code: a typo answers 400, code intact."""
     for k in ("agent_id", "owner_username", "notify"):
         if k not in b:
             raise ApiErr(400, f"missing {k}")
@@ -323,18 +332,33 @@ async def register(d, req: Request):
         raise ApiErr(400, "agent_id must be 1-64 chars of A-Z a-z 0-9 _ . -")
     if not isinstance(b["owner_username"], str) or not b["owner_username"].strip():
         raise ApiErr(400, "owner_username must be a non-empty string")
+    if q1("SELECT 1 FROM disabled_agents WHERE domain_id=? AND agent_id=?", (d, b["agent_id"])):
+        raise ApiErr(403, "agent disabled by the operator")
+    if b.get("accept_policy", "notify_run") not in ("auto", "notify_run", "manual"):
+        raise ApiErr(400, "accept_policy must be auto | notify_run | manual")
     af = b.get("accept_from", "all")
     if af != "all" and not (isinstance(af, list) and all(isinstance(i, str) for i in af)):
         raise ApiErr(400, "accept_from must be 'all' or a list of agent ids")
-    if b.get("accept_policy", "notify_run") not in ("auto", "notify_run", "manual"):
-        raise ApiErr(400, "accept_policy must be auto | notify_run | manual")
     nb = b["notify"] if isinstance(b["notify"], dict) else {}
-    if not nb.get("channel") or not nb.get("id") or not nb.get("id_type"):
-        raise ApiErr(400, "notify must have channel, id_type and id")
+    if not nb.get("channel") or not isinstance(nb.get("id"), str) or not nb["id"] \
+            or not isinstance(nb.get("id_type"), str) or not nb["id_type"]:
+        raise ApiErr(400, "notify must have channel, id_type and id")  # scalars only: they reach SQL
+    if b.get("driver_kind", "command") not in ("command", "manual"):
+        raise ApiErr(400, "driver_kind must be command | manual")
+    if not isinstance(b.get("description", ""), str):
+        raise ApiErr(400, "description must be a string")
     if nb["channel"] not in notify.CHANNELS:
         raise ApiErr(400, "channel_unavailable")
     if nb["channel"] != domain_channel(d):
         raise ApiErr(400, f"notify.channel must be {domain_channel(d)} — the uniform channel of this domain")
+
+
+async def register_core(d, b, fresh=False):
+    """Shared by /agents/register and /join: validate, verify the notify
+    binding, write agent + binding, emit. fresh=True (join): re-check the id
+    AFTER the IM awaits — that window is the takeover race."""
+    check_registration(d, b)
+    af, nb = b.get("accept_from", "all"), b["notify"]
     ch = notify.CHANNELS[nb["channel"]]
     why = ""
     try:  # both must succeed BEFORE any binding is written — a transient IM
@@ -349,6 +373,10 @@ async def register(d, req: Request):
     ts = now()
     session = uuid.uuid4().hex  # distinguishes worker processes: an orphan lease
     prev = q1("SELECT owner_username o FROM agents WHERE domain_id=? AND agent_id=?", (d, b["agent_id"]))
+    if fresh:
+        guard_new(d, b)  # re-check: the IM-await window is the race
+    if q1("SELECT 1 FROM disabled_agents WHERE domain_id=? AND agent_id=?", (d, b["agent_id"])):
+        raise ApiErr(403, "agent disabled by the operator")  # re-check after the IM awaits
     DEREGISTERED.pop((d, b["agent_id"]), None)  # an explicit re-register revives the agent
     DB.execute("INSERT OR REPLACE INTO agents "
                "(domain_id, agent_id, owner_username, description, accept_policy, accept_from, "
@@ -373,9 +401,47 @@ async def register(d, req: Request):
     return {"notify_verified": bool(verified)}
 
 
-@app.post("/domains/{d}/agents/{aid}/deregister")
-async def deregister(d, aid, req: Request):
+@app.post("/domains/{d}/agents/register")
+async def register(d, req: Request):
     domain_of(req, d)
+    return await register_core(d, await json_body(req))
+
+
+@app.post("/domains/{d}/join")
+async def join(d, req: Request):
+    """Invite-code onboarding for NEW members: the code is the credential
+    (limited-use, expiring, revocable) — the domain token is never handed out.
+    Validation runs BEFORE the decrement (a typo answers 400, code intact);
+    past it, any failure burns one use."""
+    if d not in DOMAINS:
+        raise ApiErr(404, "no domain")
+    b = await json_body(req)
+    code = b.get("code")
+    if not isinstance(code, str) or not code:
+        raise ApiErr(400, "missing code")
+    if not isinstance(b.get("agent_id"), str):
+        raise ApiErr(400, "missing agent_id")  # non-scalars break the SQL
+    # gate specific answers behind the code: a wrong code must not probe
+    # which ids exist, are disabled, or which channel the domain runs
+    if not q1("SELECT 1 FROM invites WHERE code=? AND domain_id=? AND uses_left>0 AND expires_at>?",
+              (code, d, now())):
+        raise ApiErr(403, "invite invalid, expired, or revoked")
+    # join is for NEW members — existing ones add agents via /register
+    check_registration(d, b)
+    guard_new(d, b)
+    if x("UPDATE invites SET uses_left=uses_left-1 WHERE code=? AND domain_id=? AND uses_left>0 AND expires_at>?",
+         (code, d, now())) != 1:
+        print(f"[join] failed code attempt domain={d} from={req.client.host if req.client else '?'}", flush=True)
+        raise ApiErr(403, "invite invalid, expired, or revoked")
+    DB.commit()
+    r = await register_core(d, b, fresh=True)
+    r["domain_token"] = str(DOMAINS[d]["token"])
+    return r
+
+
+async def deregister_core(d, aid):
+    """Shared by the deregister endpoint (owner-initiated) and operator kick:
+    fail in-flight, say goodbye, remove the row (session-guarded), tombstone."""
     a = require_agent(d, aid)
     for t in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status NOT IN ('completed','failed','canceled')", (d, aid)):
         await fail_task(t, "agent_deregistered", to="initiator")
@@ -388,6 +454,12 @@ async def deregister(d, aid, req: Request):
         # the tombstone must outlive any real poll gap: an idle long-poll (up to 65s) or
         # one 60s outbox upload plus a busy interval — 60s was outrunnable, resurrecting the agent
         DEREGISTERED[(d, aid)] = now() + 180
+
+
+@app.post("/domains/{d}/agents/{aid}/deregister")
+async def deregister(d, aid, req: Request):
+    domain_of(req, d)
+    await deregister_core(d, aid)
     return Response(status_code=204)
 
 
@@ -798,6 +870,7 @@ async def sweep():
             for f in q("SELECT id, domain_id FROM files WHERE created_at < ?", (t - CFG["task_retention"],)):
                 (FILE_DIR / f["domain_id"] / f["id"]).unlink(missing_ok=True)
             x("DELETE FROM files WHERE created_at < ?", (t - CFG["task_retention"],))
+            x("DELETE FROM invites WHERE expires_at < ?", (t,))
             DB.execute("DELETE FROM tasks WHERE finished_at IS NOT NULL AND finished_at < ?", (t - CFG["task_retention"],))
             DB.execute("DELETE FROM task_events WHERE created_at < ?", (t - CFG["task_retention"],))
             DB.commit()
@@ -806,23 +879,16 @@ async def sweep():
             print(f"[sweep] error: {e}", flush=True)
 
 
-# ---------- read-only admin ----------
-
-def _admin_ok(token):
-    return CFG["admin_token"] and token == CFG["admin_token"]
-
+# ---------- admin console + operator actions ----------
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin(token=""):
-    if not _admin_ok(token):
-        return HTMLResponse("unauthorized", status_code=401)
-    return ADMIN_HTML  # static shell; the page polls /admin/data itself
+async def admin():
+    # unauthenticated by design: trusted LAN, task texts are member-visible
+    return ADMIN_HTML
 
 
 @app.get("/admin/data")
-async def admin_data(token=""):
-    if not _admin_ok(token):
-        return JSONResponse({"error": {"code": "unauthorized"}}, status_code=401)
+async def admin_data():
     t = now()
     agents = []
     for a in q("SELECT * FROM agents ORDER BY domain_id, agent_id"):
@@ -836,17 +902,70 @@ async def admin_data(token=""):
               "status": k["status"], "fail_reason": k["fail_reason"], "created_at": iso(k["created_at"]),
               "finished_at": iso(k["finished_at"]) if k["finished_at"] else None}
              for k in q("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 100")]
-    events = [{"n": e["n"], "domain": e["domain_id"], "task_id": e["task_id"], "seq": e["seq"],
-               "type": e["type"], "payload": e["payload"], "at": iso(e["created_at"])}
-              for e in reversed(q("SELECT rowid n, domain_id, task_id, seq, type, payload, created_at "
-                                  "FROM task_events ORDER BY rowid DESC LIMIT 500"))]  # n: append order, newest last
-    return {"agents": agents, "tasks": tasks, "events": events}
+    domains = []
+    for dm in CFG["domains"]:
+        did = dm["id"]
+        ags = [a for a in agents if a["domain"] == did]
+        domains.append({"id": did, "channel": dm.get("channel") or CFG["default_channel"],
+                        "agents": len(ags), "online": sum(1 for a in ags if a["online"]),
+                        "inflight": q1("SELECT COUNT(*) c FROM tasks WHERE domain_id=? AND status IN (?,?,?)",
+                                       (did, *INFLIGHT))["c"],
+                        "last_event": iso(q1("SELECT MAX(created_at) m FROM task_events WHERE domain_id=?",
+                                             (did,))["m"])})
+    invites = [{"code": i["code"], "domain": i["domain_id"], "note": i["note"], "uses_left": i["uses_left"],
+                "expires_at": iso(i["expires_at"])} for i in q("SELECT * FROM invites ORDER BY created_at DESC")]
+    disabled = [{"domain": b["domain_id"], "agent_id": b["agent_id"]}
+                for b in q("SELECT domain_id, agent_id FROM disabled_agents ORDER BY agent_id")]
+    return {"agents": agents, "tasks": tasks, "domains": domains, "invites": invites, "disabled": disabled}
+
+
+@app.post("/admin/op")
+async def admin_op(req: Request):
+    """Operator actions, one endpoint: invite | invite_revoke | kick | disable
+    | enable | task_abort. kick = deregister; disable = kick + deny
+    re-registration."""
+    b = await json_body(req)
+    op, d = b.get("op"), b.get("domain")
+    if any(v is not None and not isinstance(v, (str, int, float, bool)) for v in b.values()):
+        raise ApiErr(400, "values must be scalars")  # non-scalars break the SQL
+    if op == "invite":
+        if d not in DOMAINS:
+            raise ApiErr(404, "no domain")
+        hours, uses = b.get("hours", 24), b.get("uses", 1)
+        # bool is an int in python — exclude
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in (hours, uses)) \
+                or not (0 < hours <= 720 and 0 < uses <= 100):
+            raise ApiErr(400, "hours/uses must be positive ints (hours<=720, uses<=100)")
+        code = "A2A-" + "".join(secrets.choice(INVITE_ABC) for _ in range(8))  # 31^8: grinding is hopeless
+        exp = now() + hours * 3600
+        DB.execute("INSERT INTO invites (code,domain_id,note,uses_left,expires_at,created_at) VALUES (?,?,?,?,?,?)",
+                   (code, d, str(b.get("note") or "")[:200], uses, exp, now()))
+        DB.commit()
+        return {"code": code, "uses": uses, "expires_at": iso(exp)}
+    if op == "invite_revoke":
+        if not x("DELETE FROM invites WHERE code=?", (b.get("code"),)):
+            raise ApiErr(404, "no invite")
+        DB.commit()
+        return {"ok": True}
+    if op in ("kick", "disable"):
+        aid = b.get("agent_id")
+        if op == "disable":  # BEFORE the kick: re-registers in the kick's awaits must 403
+            require_agent(d, aid)
+            DB.execute("INSERT OR REPLACE INTO disabled_agents (domain_id,agent_id) VALUES (?,?)", (d, aid))
+            DB.commit()
+        await deregister_core(d, aid)  # kick: the 404 comes from deregister_core
+        return {"ok": True}
+    if op == "enable":
+        x("DELETE FROM disabled_agents WHERE domain_id=? AND agent_id=?", (d, b.get("agent_id")))
+        DB.commit()
+        return {"ok": True}
+    if op == "task_abort":
+        return {"status": await cancel_core(require_task(d, b.get("task_id")), "canceled_by_operator")}
+    raise ApiErr(400, "bad op")
 
 
 @app.get("/admin/task/{tid}")
-async def admin_task(tid, token=""):
-    if not _admin_ok(token):
-        return JSONResponse({"error": {"code": "unauthorized"}}, status_code=401)
+async def admin_task(tid):
     task = q1("SELECT * FROM tasks WHERE id=?", (tid,))
     if not task:
         raise ApiErr(404, "no task")
@@ -859,9 +978,6 @@ if __name__ == "__main__":
         if CFG.get(_name) and _name not in notify.CHANNELS:
             print(f"[server] WARNING: {_name} config incomplete; channel disabled "
                   f"(complete the credentials or drop the section)", flush=True)
-    if CFG["admin_token"] in ("", "change-me"):
-        print("[server] WARNING: admin_token is default/empty — /admin exposes task texts; "
-              "set a real token in server.yaml", flush=True)
     if not CFG["public_base"]:
         print("[server] WARNING: public_base is empty; links in notification texts "
               "will be relative — set it in server.yaml", flush=True)
