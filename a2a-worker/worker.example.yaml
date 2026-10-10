@@ -16,7 +16,6 @@ notify:                      # asked at onboarding: which IM platform + your ID 
   id_type: text
   id: zhangsan
 
-need_input_marker: '^NEED_INPUT:'   # matched against the END of driver output: print the marker line LAST
 workspace_dir: ~/.a2a-worker/tasks
 # local_port: 7860           # optional override; default is derived per agent id (no collisions)
 busy_poll_interval: 5

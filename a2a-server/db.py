@@ -70,8 +70,6 @@ CREATE TABLE IF NOT EXISTS invites (
   code       TEXT PRIMARY KEY,
   domain_id  TEXT NOT NULL,
   note       TEXT NOT NULL DEFAULT '',
-  uses_left  INTEGER NOT NULL DEFAULT 1,
-  expires_at REAL NOT NULL,
   created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS disabled_agents (

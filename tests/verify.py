@@ -484,7 +484,7 @@ def server_checks():
           and ev and "u12" in ev["payload"], ev)
 
     # ---------- operator surface: invites (join), disable, kick, abort ----------
-    s, r = call("POST", "/admin/op", {"op": "invite", "domain": "team-a", "uses": 1, "hours": 1, "note": "seed"})
+    s, r = call("POST", "/admin/op", {"op": "invite", "domain": "team-a", "note": "seed"})
     code = r.get("code") if s == 200 else None
     check("op/invite-created", s == 200 and code and code.startswith("A2A-") and len(code) == 12, (s, r))
     # a code must never take over a registered identity (register_core REPLACEs the row)
@@ -504,10 +504,10 @@ def server_checks():
           call("GET", "/domains/team-a/agents", token=r.get("domain_token") if s == 200 else "-")[0] == 200)
     jbody = {"agent_id": "joined2", "owner_username": "u21",
              "notify": {"channel": "log", "id_type": "text", "id": "n21"}}
-    check("join/single-use-burns", call("POST", "/domains/team-a/join", {**jbody, "code": code})[0] == 403)
-    _, inv = call("POST", "/admin/op", {"op": "invite", "domain": "team-a"})
-    sql("UPDATE invites SET expires_at=? WHERE code=?", (time.time() - 1, inv["code"]))
-    check("join/expired-refused", call("POST", "/domains/team-a/join", {**jbody, "code": inv["code"]})[0] == 403)
+    # one code onboards any number of members until revoked — nothing to burn
+    check("join/code-reusable", call("POST", "/domains/team-a/join",
+                                     {"code": code, "agent_id": "joined3", "owner_username": "u22",
+                                      "notify": {"channel": "log", "id_type": "text", "id": "n22"}})[0] == 200)
     _, inv = call("POST", "/admin/op", {"op": "invite", "domain": "team-a"})
     call("POST", "/admin/op", {"op": "invite_revoke", "code": inv["code"]})
     check("join/revoked-refused", call("POST", "/domains/team-a/join", {**jbody, "code": inv["code"]})[0] == 403)
@@ -521,8 +521,8 @@ def server_checks():
     check("disable/join-refused", call("POST", "/domains/team-a/join",
                                    {"code": inv["code"], "agent_id": "joined", "owner_username": "u20",
                                     "notify": {"channel": "log", "id_type": "text", "id": "n20"}})[0] == 403)
-    # fixable input errors (wrong channel) answer 400 WITHOUT spending the code
-    check("join/invalid-body-keeps-code",
+    # fixable input errors (wrong channel) answer 400, the code unaffected
+    check("join/invalid-body-rejected",
           call("POST", "/domains/team-a/join",
                {**jbody, "code": inv["code"], "notify": {"channel": "nope", "id_type": "t", "id": "x"}})[0] == 400)
     check("join/non-scalar-notify-400",
@@ -543,18 +543,12 @@ def server_checks():
     call("POST", "/admin/op", {"op": "task_abort", "domain": "team-a", "task_id": tid})
     f = wait_status(tid, "canceled")
     check("op/task-abort", f.get("fail_reason") == "canceled_by_operator", f)
-    # expired invites leave the table via the sweep
-    _, inv = call("POST", "/admin/op", {"op": "invite", "domain": "team-a"})
-    sql("UPDATE invites SET expires_at=? WHERE code=?", (time.time() - 400, inv["code"]))
-    end = time.time() + 12
-    while time.time() < end and q1("SELECT 1 FROM invites WHERE code=?", (inv["code"],)):
-        time.sleep(0.5)
-    check("sweep/invite-retention", not q1("SELECT 1 FROM invites WHERE code=?", (inv["code"],)))
     s, r = call("GET", "/admin/data")
     ad = r if s == 200 else {}
     check("admin/domains-summary",
           any(dm["id"] == "team-a" and dm["agents"] >= 1 and dm["inflight"] >= 0 for dm in ad.get("domains", []))
-          and isinstance(ad.get("invites"), list) and isinstance(ad.get("disabled"), list), ad.get("domains"))
+          and isinstance(ad.get("invites"), list) and isinstance(ad.get("disabled"), list)
+          and all(set(i) == {"code", "domain", "note"} for i in ad.get("invites", [])), ad.get("domains"))
     tb = next((dm for dm in ad.get("domains", []) if dm["id"] == "team-b"), {})
     check("admin/eventless-domain-last-event-none", tb.get("last_event") is None, tb)  # iso(None) once stamped "now"
 
@@ -574,7 +568,6 @@ domain: team-a
 domain_token: {TOKEN}
 agent: {{id: {agent}, owner: u1, accept_policy: auto, accept_from: all}}
 notify: {{channel: log, id_type: text, id: u1}}
-need_input_marker: '^NEED_INPUT:'
 workspace_dir: {os.path.join(SCRATCH, 'ws')}
 local_port: {free_port()}          # explicit: the derived default could collide with a stray process
 busy_poll_interval: 1

@@ -46,6 +46,9 @@ def _positive(v):
     return v is None or (not isinstance(v, bool) and isinstance(v, (int, float)) and v > 0)
 
 
+NEED_INPUT_MARKER = r"^NEED_INPUT:"  # driver prints this line LAST to ask one question
+
+
 def load_cfg():
     p = Path(os.environ.get("A2A_WORKER_CONFIG", HERE / "worker.yaml"))
     if not p.exists():
@@ -281,7 +284,7 @@ class Runner:
                 return
             try:
                 res = drivers.run_command(self.driver_cfg, self.task, self._ws(),
-                                          self.cfg.get("need_input_marker", r"^NEED_INPUT:"),
+                                          NEED_INPUT_MARKER,
                                           self.cancel_event, self.expected)
             except Exception as e:
                 res = {"status": "failed", "fail_reason": "driver_error", "output": repr(e)}

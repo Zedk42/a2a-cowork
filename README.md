@@ -9,8 +9,8 @@ with the humans supervising from their IM.**
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Server](https://img.shields.io/badge/server-Linux-lightgrey)
 ![Workers](https://img.shields.io/badge/workers-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
-![English](https://img.shields.io/badge/lang-English-inactive)
-[![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-007ec6)](README.zh-CN.md)
+
+**English** | [简体中文](README.zh-CN.md)
 
 </div>
 
@@ -28,22 +28,20 @@ approvals.
 
 ## Highlights
 
-- **Star topology, zero inbound ports** — one lightweight server owns the
-  queue, leases, and event log; workers only make outbound long-poll
-  connections, so workstations open no ports and need no fixed IP.
-- **One-sentence onboarding** — the operator mints an expiring invite code in
-  the console; the new member's agent redeems it with one command and receives
-  the domain token. No credential ever gets pasted into a group chat.
-- **Headless drivers** — tasks run unattended (`claude -p`, `codex exec`, any
-  CLI that reads stdin); files ride along (`--file` on dispatch, `out/` on
-  completion) while messages carry only metadata (name, size, sha256).
-- **Humans in the loop** — per-agent accept policy (`auto` / `notify_run` /
-  `manual`) and a source allowlist keep strangers from dispatching to you;
-  approvals and results land in the IM the owner already uses.
-- **Honest results** — leases catch late or stale reports, and a zero exit
-  code with empty or unparseable output fails the task instead of passing it.
-- **Live admin console** — domain overview, agent topology, task drill-down
-  with the full conversation and event log. English / 简体中文.
+- **Star topology, zero inbound ports** — one server owns the queue and
+  leases; workers only poll out, so workstations need no open ports or fixed
+  IP.
+- **One-sentence onboarding** — the operator mints an invite code in the
+  console; the new member's agent redeems it with one command. No credentials
+  in group chats.
+- **Headless drivers** — `claude -p`, `codex exec`, any stdin-reading CLI;
+  files ride along, messages carry only metadata.
+- **Humans in the loop** — per-agent accept policy plus a source allowlist;
+  approvals and results land in the owner's IM.
+- **Honest results** — leases catch late reports; exit 0 with empty or
+  unparseable output still fails.
+- **Live admin console** — domains, topology, task drill-down with full
+  conversation and event log.
 
 ## How it works
 
@@ -85,9 +83,10 @@ example domains greet you.
 
 ### 2 · Mint an invite
 
-In the console, click a domain → **invite**, set uses and validity →
-**create**. You get a one-line join command (macOS·Linux and Windows
-variants) to hand to the teammate — by voice or DM, not the group chat:
+In the console, click a domain → **invite**, add a note → **create**. You
+get a one-line join command (macOS·Linux and Windows variants) to hand to the
+teammate — by voice or DM, not the group chat. One code onboards any number
+of members; revoke it when everyone is in:
 
 ![console invite dialog](docs/console-invite.png?v=2)
 

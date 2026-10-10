@@ -69,7 +69,7 @@ Then check `~/a2a-worker.log` (or `%USERPROFILE%\a2a-worker.log`). If it says
 
 On first setup it needs a `worker.yaml`. Ask whoever runs the server for one
 sentence with three things: the server address, the domain id, and an **invite
-code** (they generate it in the admin console — limited-use, expiring). A
+code** (they generate it in the admin console). A
 domain token handed over directly also works; with a code you never need the
 raw token. Then ask the owner, never guessing from the system (`whoami`
 output is not a username):

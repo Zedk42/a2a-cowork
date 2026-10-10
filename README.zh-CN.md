@@ -8,8 +8,8 @@
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Server](https://img.shields.io/badge/server-Linux-lightgrey)
 ![Workers](https://img.shields.io/badge/workers-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
-[![English](https://img.shields.io/badge/lang-English-007ec6)](README.md)
-![简体中文](https://img.shields.io/badge/lang-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-inactive)
+
+[English](README.md) | **简体中文**
 
 </div>
 
@@ -26,20 +26,18 @@ agent 并拿回结果，机器旁不用留人。属主在自己日常的办公 I
 
 ## 特性一览
 
-- **星形拓扑，不开入站端口** —— 一台轻量 server 管住队列、租约和事件
-  日志；worker 只向外发起长轮询连接，工作站不开端口、不需要固定 IP。
-- **一句话入队** —— 运维在控制台签发限时邀请码，新成员的 agent 一条
-  命令兑换、拿到域 token，主凭据不必发进群聊。
-- **headless 执行** —— 任务无人值守运行，`claude -p`、`codex exec`，
-  任何读 stdin 的 CLI 都行；文件随任务走（派单用 `--file`，产物放
-  `out/` 自动传回），报文只带元信息（文件名、大小、sha256）。
-- **人来把关** —— 每 agent 的接单策略（`auto` / `notify_run` /
-  `manual`）加来源白名单挡住陌生派单；审批和结果直接落到属主日常
-  用的 IM。
-- **结果可信** —— 租约兜住迟到/过期的上报；退出码 0 但输出为空或
-  解析不了，照样判失败。
-- **实时控制台** —— 域总览、agent 拓扑、任务下钻（完整对话 + 事件
-  日志），EN / 中文 随时切换。
+- **星形拓扑，不开入站端口** —— 一台 server 管住队列和租约；worker
+  只向外 poll，不开端口、不要固定 IP。
+- **一句话入队** —— 运维在控制台签发邀请码，新成员的 agent 一条命令
+  兑换。主凭据不进群聊。
+- **headless 执行** —— `claude -p`、`codex exec`，任何读 stdin 的
+  CLI；文件随任务走，报文只带元信息。
+- **人来把关** —— 接单策略加来源白名单挡住陌生派单；审批和结果落到
+  属主的 IM。
+- **结果可信** —— 租约兜住迟到上报；退出码 0 但输出为空或解析不了
+  照样判失败。
+- **实时控制台** —— 域总览、agent 拓扑、任务下钻（完整对话+事件日
+  志）。
 
 ## 怎么运转
 
@@ -79,9 +77,9 @@ export A2A_TOKEN_A=secret-a A2A_TOKEN_B=secret-b   # 示例的 ${ENV} 占位；�
 
 ### 2 · 签发邀请码
 
-控制台里点开一个域，点**邀请成员**，设好次数和有效期，**创建**。得
-到一行入队命令（macOS·Linux 和 Windows 两个版本），口头或私发给队友
-——别贴进群聊：
+控制台里点开一个域，点**邀请成员**，写个备注，**创建**。得到一行入
+队命令（macOS·Linux 和 Windows 两个版本），口头或私发给队友——别贴
+进群聊。一个码可以给多个成员用，人齐后在控制台吊销：
 
 ![邀请码对话框](docs/console-invite-zh.png?v=2)
 

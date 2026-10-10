@@ -157,7 +157,6 @@ dialog h3{font:600 16px/1.3 var(--sans);margin:0 0 6px}
       margin:7px 0 4px;cursor:pointer;user-select:all;word-break:break-all;
       background:#101828;color:#eaecf0;border:1px solid #344054}
 .code:hover{border-color:var(--accent)}
-.dlg-sub{font:12px var(--sans);color:var(--soft);margin:6px 0 0;text-align:center}
 #toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,8px);background:#101828;color:#fff;
        font:13px var(--sans);padding:9px 16px;border-radius:8px;opacity:0;pointer-events:none;transition:.2s;
        box-shadow:var(--shadow-lg)}
@@ -199,18 +198,15 @@ const ZH = {  // server / agent / worker / driver / token stay English
   "Recent tasks": "最近任务", "no agents registered": "还没有 agent 注册",
   "online": "在线", "offline": "离线", "owner": "属主", "policy": "策略",
   "notify": "通知", "verified": "已验证", "unverified": "未验证",
-  "status": "状态", "code": "邀请码", "note": "备注", "uses left": "剩余次数", "expires": "有效期",
-  "id": "ID",
+  "status": "状态", "code": "邀请码", "note": "备注", "id": "ID",
   "created": "创建时间", "from": "发起方", "to": "接收方", "reason": "失败原因",
   "kick": "踢出", "disable": "停用", "enable": "启用", "revoke": "吊销", "abort": "中止",
   "create": "创建", "close": "关闭", "disabled": "已停用",
   "block lifted — the agent returns when its worker restarts": "已解除停用，该 agent 的 worker 重启后会自动回归",
   "none": "暂无", "no tasks yet": "暂无任务", "New invite": "新建邀请码",
-  "uses": "次数", "valid for (hours)": "有效时长（小时）",
   "copied": "已复制", "copy failed": "复制失败", "failed": "失败",
-  "just now": "刚刚", "expired": "已过期",
+  "just now": "刚刚",
   "{n}m ago": "{n} 分钟前", "{n}h ago": "{n} 小时前", "{n}d ago": "{n} 天前",
-  "{n}m left": "剩 {n} 分钟", "{n}h left": "剩 {n} 小时", "{n}d left": "剩 {n} 天",
   "agent topology": "agent 拓扑", "loading": "加载中", "failed to load": "加载失败",
 };
 const t = s => LANG === "zh" ? (ZH[s] || s) : s;
@@ -278,13 +274,6 @@ function ago(iso) {
   if (s < 60) return t("just now");
   const n = s < 3600 ? Math.floor(s / 60) : s < 86400 ? Math.floor(s / 3600) : Math.floor(s / 86400);
   return t(s < 3600 ? "{n}m ago" : s < 86400 ? "{n}h ago" : "{n}d ago").replace("{n}", n);
-}
-function till(iso) {
-  if (!iso) return "—";
-  const s = (Date.parse(iso) - Date.now()) / 1000;
-  if (s <= 0) return t("expired");
-  const n = s < 3600 ? Math.floor(s / 60) : s < 86400 ? Math.floor(s / 3600) : Math.floor(s / 86400);
-  return t(s < 3600 ? "{n}m left" : s < 86400 ? "{n}h left" : "{n}d left").replace("{n}", n);
 }
 
 /* ---------- api ---------- */
@@ -573,12 +562,12 @@ function noteRow(tb, text, n) {
 function invitesSection(d, did) {
   const [sec, card] = section(t("Invites"), "tbl");
   const tb = el("table");
-  row(tb, [t("code"), t("note"), t("uses left"), t("expires"), ""], true);
+  row(tb, [t("code"), t("note"), ""], true);
   const invs = d.invites.filter(i => i.domain === did);
   for (const i of invs)
-    row(tb, [span("mono", i.code), i.note || "", String(i.uses_left), till(i.expires_at),
+    row(tb, [span("mono", i.code), i.note || "",
              mkBtn(t("revoke"), "", () => run(() => op({op: "invite_revoke", code: i.code})), "x")]);
-  if (!invs.length) noteRow(tb, t("none"), 5);
+  if (!invs.length) noteRow(tb, t("none"), 3);
   card.append(tb);
   return sec;
 }
@@ -622,15 +611,13 @@ function inviteDialog(did) {
   const body = $("#dlg-body");
   body.innerHTML = "";
   $("#dlg-title").textContent = t("New invite") + " — " + did;
-  const uses = fld(t("uses"), "1", body), hours = fld(t("valid for (hours)"), "24", body), note = fld(t("note"), "", body);
+  const note = fld(t("note"), "", body);
   const create = mkBtn(t("create"), "pri", null, "plus");
   create.style.marginTop = "12px";
   create.onclick = async () => {
     create.disabled = true;  // a double click would mint two codes, one orphaned
     try {
-      const r = await op({op: "invite", domain: did, note: note.value,
-                          uses: Number(uses.value) || 1,
-                          hours: Number(hours.value) || 24});
+      const r = await op({op: "invite", domain: did, note: note.value});
       body.innerHTML = "";
       const ch = DATA.domains.find(x => x.id === did).channel;
       const mk = (lbl, py, cd) => {  // one labeled block per platform, click to copy
@@ -644,7 +631,6 @@ function inviteDialog(did) {
       mk("macOS · Linux", "~/a2a-cowork/a2a-worker/.venv/bin/python", "cd ~/a2a-cowork/a2a-skill");
       mk("Windows", "%USERPROFILE%\\a2a-cowork\\a2a-worker\\.venv\\Scripts\\python.exe",
          "cd %USERPROFILE%\\a2a-cowork\\a2a-skill");
-      body.append(el("p", "dlg-sub", `${r.uses}× · ${till(r.expires_at)}`));
     } catch (e) {
       create.disabled = false;
       toast(t("failed") + ": " + (e.message || e));

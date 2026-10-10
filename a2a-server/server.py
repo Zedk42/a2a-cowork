@@ -322,8 +322,8 @@ def guard_new(d, b):
 
 
 def check_registration(d, b):
-    """Pure input/domain checks, no writes. join runs this BEFORE spending
-    the code: a typo answers 400, code intact."""
+    """Pure input/domain checks, no writes: a typo answers 400 and nothing
+    changed server-side."""
     for k in ("agent_id", "owner_username", "notify"):
         if k not in b:
             raise ApiErr(400, f"missing {k}")
@@ -410,9 +410,7 @@ async def register(d, req: Request):
 @app.post("/domains/{d}/join")
 async def join(d, req: Request):
     """Invite-code onboarding for NEW members: the code is the credential
-    (limited-use, expiring, revocable) — the domain token is never handed out.
-    Validation runs BEFORE the decrement (a typo answers 400, code intact);
-    past it, any failure burns one use."""
+    (revocable); the domain token reaches members only through this call."""
     if d not in DOMAINS:
         raise ApiErr(404, "no domain")
     b = await json_body(req)
@@ -421,17 +419,11 @@ async def join(d, req: Request):
         raise ApiErr(400, "missing code")
     # gate specific answers behind the code: a wrong code must not probe
     # which ids exist, are disabled, or which channel the domain runs
-    if not q1("SELECT 1 FROM invites WHERE code=? AND domain_id=? AND uses_left>0 AND expires_at>?",
-              (code, d, now())):
-        raise ApiErr(403, "invite invalid, expired, or revoked")
+    if not q1("SELECT 1 FROM invites WHERE code=? AND domain_id=?", (code, d)):
+        raise ApiErr(403, "invite invalid or revoked")
     # join is for NEW members — existing ones add agents via /register
     check_registration(d, b)
     guard_new(d, b)
-    if x("UPDATE invites SET uses_left=uses_left-1 WHERE code=? AND domain_id=? AND uses_left>0 AND expires_at>?",
-         (code, d, now())) != 1:
-        print(f"[join] failed code attempt domain={d} from={req.client.host if req.client else '?'}", flush=True)
-        raise ApiErr(403, "invite invalid, expired, or revoked")
-    DB.commit()
     r = await register_core(d, b, fresh=True)
     r["domain_token"] = str(DOMAINS[d]["token"])
     return r
@@ -868,7 +860,6 @@ async def sweep():
             for f in q("SELECT id, domain_id FROM files WHERE created_at < ?", (t - CFG["task_retention"],)):
                 (FILE_DIR / f["domain_id"] / f["id"]).unlink(missing_ok=True)
             x("DELETE FROM files WHERE created_at < ?", (t - CFG["task_retention"],))
-            x("DELETE FROM invites WHERE expires_at < ?", (t,))
             DB.execute("DELETE FROM tasks WHERE finished_at IS NOT NULL AND finished_at < ?", (t - CFG["task_retention"],))
             DB.execute("DELETE FROM task_events WHERE created_at < ?", (t - CFG["task_retention"],))
             DB.commit()
@@ -910,8 +901,8 @@ async def admin_data():
                         "inflight": q1("SELECT COUNT(*) c FROM tasks WHERE domain_id=? AND status IN (?,?,?)",
                                        (did, *INFLIGHT))["c"],
                         "last_event": iso(last) if last else None})  # iso(None) would stamp "now"
-    invites = [{"code": i["code"], "domain": i["domain_id"], "note": i["note"], "uses_left": i["uses_left"],
-                "expires_at": iso(i["expires_at"])} for i in q("SELECT * FROM invites ORDER BY created_at DESC")]
+    invites = [{"code": i["code"], "domain": i["domain_id"], "note": i["note"]}
+                for i in q("SELECT * FROM invites ORDER BY created_at DESC")]
     disabled = [{"domain": b["domain_id"], "agent_id": b["agent_id"]}
                 for b in q("SELECT domain_id, agent_id FROM disabled_agents ORDER BY agent_id")]
     return {"agents": agents, "tasks": tasks, "domains": domains, "invites": invites, "disabled": disabled}
@@ -929,17 +920,11 @@ async def admin_op(req: Request):
     if op == "invite":
         if d not in DOMAINS:
             raise ApiErr(404, "no domain")
-        hours, uses = b.get("hours", 24), b.get("uses", 1)
-        # bool is an int in python — exclude
-        if any(isinstance(v, bool) or not isinstance(v, int) for v in (hours, uses)) \
-                or not (0 < hours <= 720 and 0 < uses <= 100):
-            raise ApiErr(400, "hours/uses must be positive ints (hours<=720, uses<=100)")
         code = "A2A-" + "".join(secrets.choice(INVITE_ABC) for _ in range(8))  # 31^8: grinding is hopeless
-        exp = now() + hours * 3600
-        DB.execute("INSERT INTO invites (code,domain_id,note,uses_left,expires_at,created_at) VALUES (?,?,?,?,?,?)",
-                   (code, d, str(b.get("note") or "")[:200], uses, exp, now()))
+        DB.execute("INSERT INTO invites (code,domain_id,note,created_at) VALUES (?,?,?,?)",
+                   (code, d, str(b.get("note") or "")[:200], now()))
         DB.commit()
-        return {"code": code, "uses": uses, "expires_at": iso(exp)}
+        return {"code": code}
     if op == "invite_revoke":
         if not x("DELETE FROM invites WHERE code=?", (b.get("code"),)):
             raise ApiErr(404, "no invite")
