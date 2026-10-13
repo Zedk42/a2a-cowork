@@ -112,8 +112,10 @@ the files, start again (it re-registers itself). An un-stopped old process
 keeps running the old code.
 Several agents (e.g. claude + codex) can run on one machine; each has its own
 lock file and loopback port. But one agent id must run on exactly ONE machine
-at a time — the lock only guards this machine, and two machines sharing an id
-kill each other's tasks as `worker_restart`.
+at a time — the lock only guards this machine. A second machine running the
+same id no longer kills in-flight tasks (each task runs where its lease
+lives), but delivery alternates between the two — stop the old worker; the
+server records a `dual_poller` audit event.
 
 ## Leaving the team
 

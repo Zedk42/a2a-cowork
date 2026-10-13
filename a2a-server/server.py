@@ -108,6 +108,7 @@ async def any_err(request, exc):  # same rollback duty for uncaught errors (500s
 now = time.time
 AGENT_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")  # ids travel in URL paths and the
 # x-agent-id header: a "/" matches no route (404 poll loop), non-ASCII breaks the header
+SESSION_RE = re.compile(r"[0-9a-f]{16,64}")  # a poller's self-declared process identity
 INVITE_ABC = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # unambiguous: no 0/O, 1/I/L
 
 
@@ -374,7 +375,11 @@ async def register_core(d, b, fresh=False):
         uid, verified, why = "", 0, str(e)
         print(f"[notify] register {b['agent_id']}: {e}", flush=True)
     ts = now()
-    session = uuid.uuid4().hex  # distinguishes worker processes: an orphan lease
+    # the poller's identity: client-declared per process when present (workers
+    # since per-poller sessions), server-generated otherwise (legacy semantics)
+    sess = b.get("session")
+    if not (isinstance(sess, str) and SESSION_RE.fullmatch(sess)):
+        sess = uuid.uuid4().hex
     prev = q1("SELECT owner_username o FROM agents WHERE domain_id=? AND agent_id=?", (d, b["agent_id"]))
     if fresh:
         guard_new(d, b)  # re-check: the IM-await window is the race
@@ -386,7 +391,7 @@ async def register_core(d, b, fresh=False):
                "driver_kind, session, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
                (d, b["agent_id"], b["owner_username"], b.get("description", ""),
                 b.get("accept_policy", "notify_run"),
-                "all" if af == "all" else json.dumps(af), b.get("driver_kind", "command"), session, ts))
+                "all" if af == "all" else json.dumps(af), b.get("driver_kind", "command"), sess, ts))
     old = q1("SELECT verified FROM owner_bindings WHERE domain_id=? AND username=? AND channel=?",
              (d, b["owner_username"], nb["channel"]))
     if verified or not (old and old["verified"]):  # a failed declaration never overwrites a verified binding
@@ -401,6 +406,12 @@ async def register_core(d, b, fresh=False):
     # emit exactly one event: notify_failed on a broken binding, register_verify otherwise
     emit(f"reg:{b['agent_id']}", d, "notify_failed" if not verified else "register_verify",
          {"notify_verified": bool(verified), "why": why})
+    # a fresh registrant supersedes any prior process of this agent: leases held
+    # by another session are dead by definition. This register-time kill is the
+    # fast path for real restarts; polls of a non-holding session never adjudicate.
+    for t in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status IN ('dispatched','working') "
+               "AND lease_session IS NOT NULL AND lease_session != ?", (d, b["agent_id"], sess)):
+        await fail_task(t, "worker_restart")
     return {"notify_verified": bool(verified)}
 
 
@@ -642,7 +653,14 @@ async def poll(d, aid, req: Request):
     if (exp := DEREGISTERED.get((d, aid), 0)) and now() < exp:
         raise ApiErr(410, "deregistered")  # every poll inside the window gets 410, not just the first
     agent = require_agent(d, aid)
-    agent_session = agent["session"]
+    raw = b.get("session")
+    poller = raw if isinstance(raw, str) and SESSION_RE.fullmatch(raw) else agent["session"]
+    if poller != agent["session"] and not q1(
+            "SELECT 1 FROM task_events WHERE domain_id=? AND task_id=? AND type='dual_poller'",
+            (d, f"reg:{aid}")):
+        # audit trail only: a second live process is polling under this id —
+        # delivery alternates between the two until the operator stops one
+        emit(f"reg:{aid}", d, "dual_poller", {"poller": poller[:8]})
     st = b.get("exec_state") if isinstance(b.get("exec_state"), dict) else {"tasks": []}
     seen = [t for t in st.get("tasks", []) if isinstance(t, dict)
             and isinstance(t.get("task_id"), str) and t.get("task_id")]  # str guard: a non-str must not reach the SQL binding
@@ -660,18 +678,21 @@ async def poll(d, aid, req: Request):
               (now(), exp if isinstance(exp, int) and not isinstance(exp, bool) and exp > 0 else None, t["task_id"]))
             emit(t["task_id"], d, "state_change", {"to": "working"})
     for t in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status IN ('dispatched','working')", (d, aid)):
-        orphan = t["id"] not in {s["task_id"] for s in seen}
-        # judged against the SERVER-RECORDED session (agents.session): a lease held by
-        # any other session belongs to a dead/old poller and fails immediately
-        foreign = t["lease_session"] and t["lease_session"] != agent_session
-        if (orphan and (foreign or now() - t["dispatched_at"] > CFG["dispatch_grace"])):
+        # only the lease-HOLDING poller adjudicates: its own task leaving its
+        # exec_state for longer than the grace dies as worker_restart. A poller
+        # that does not hold the lease (a second process sharing this id) must
+        # never kill it — dead holders are reaped by the sweep (receive_timeout,
+        # timeout_stale) and by the supersede-on-register rule
+        if t["id"] not in {s["task_id"] for s in seen} and t["lease_session"] == poller \
+                and now() - t["dispatched_at"] > CFG["dispatch_grace"]:
             await fail_task(t, "worker_restart")
 
     async def deliver():
         # re-read inside deliver: the second call runs AFTER the long-poll await, during
-        # which the agent may have re-registered (new session) — leasing under the stale
-        # captured session would get the task killed as worker_restart on the next poll
-        a = q1("SELECT session, driver_kind FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
+        # which the agent row may have been deleted — the existence check must be
+        # fresh. The lease goes to THIS poller (captured at request start): the
+        # holder is the one whose exec_state reports keep the task alive.
+        a = q1("SELECT driver_kind FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
         if not a:
             return None  # deregistered while we were suspended
         seen_ids = {s["task_id"] for s in seen}
@@ -692,7 +713,7 @@ async def poll(d, aid, req: Request):
             return None
         lease = uuid.uuid4().hex
         if x("UPDATE tasks SET status='dispatched', lease_id=?, lease_session=?, dispatched_at=? WHERE id=? AND status='available'",
-             (lease, a["session"], now(), row["id"])) != 1:
+             (lease, poller, now(), row["id"])) != 1:
             return None
         DB.commit()
         emit(row["id"], d, "state_change", {"to": "dispatched"})

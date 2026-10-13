@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -27,6 +28,8 @@ import drivers
 
 HERE = Path(__file__).parent
 HOME = Path.home() / ".a2a-worker"
+SESSION = uuid.uuid4().hex  # this process's identity: the server adjudicates
+# leases per poller session, and a fresh register supersedes prior ones
 VALID_REPORT = ("completed", "failed", "input-required")
 CURRENT = None  # the in-flight Runner; shared with the signal path and manual reports
 LOCK_FILE = None  # set in main; the /stop hard-exit cleans it (atexit does not run there)
@@ -202,6 +205,7 @@ def register(cfg):
         "agent_id": a["id"], "owner_username": a["owner"], "description": a.get("description", ""),
         "accept_policy": a.get("accept_policy", "notify_run"), "accept_from": a.get("accept_from", "all"),
         "driver_kind": (cfg.get("driver") or {}).get("kind", "command"),  # server notifies manual dispatch by kind
+        "session": SESSION,
         "notify": {"channel": cfg["notify"]["channel"], "id_type": cfg["notify"]["id_type"], "id": cfg["notify"]["id"]}}
     while True:  # server may still be booting/upgrading; keep the worker alive
         s, r = api(cfg, "POST", f"/domains/{cfg['domain']}/agents/register", payload)
@@ -338,7 +342,8 @@ def loop(cfg):
     base = f"/domains/{cfg['domain']}/agents/{cfg['agent']['id']}"
     while True:
         hold = cur is not None and not cur.reported
-        st = {"block": cur is None, "exec_state": {"tasks": [cur.exec_state()] if hold else []}}
+        st = {"block": cur is None, "session": SESSION,
+              "exec_state": {"tasks": [cur.exec_state()] if hold else []}}
         s, r = api(cfg, "POST", f"{base}/poll", st)
         if cur is None and s in (200, 204):
             backoff = 1  # idle + answered: clear stale backoff; a held task keeps its retry pacing

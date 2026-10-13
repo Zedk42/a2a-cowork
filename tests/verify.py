@@ -422,13 +422,42 @@ def server_checks():
     poll("rs")
     f = wait_status(tid, "failed", timeout=5)
     check("restart/past-grace-fails", f.get("fail_reason") == "worker_restart", f)
-    # foreign session (re-register issued a new one): fails immediately, no grace wait
+    # foreign session: a fresh registrant supersedes the old process's leases
+    # immediately (no grace wait, no poll needed)
     tid = new_task("rs", "foreign lease")
     poll("rs")
     register("rs", owner="u8")
-    poll("rs")
     f = wait_status(tid, "failed", timeout=5)
     check("restart/foreign-session-immediate", f.get("fail_reason") == "worker_restart", f)
+
+    # per-poller identity: a declared client session is stored verbatim
+    s, r = call("POST", "/domains/team-a/agents/register",
+                {"agent_id": "cs", "owner_username": "u14", "session": "c" * 32,
+                 "notify": {"channel": "log", "id_type": "text", "id": "n14"}})
+    check("register/client-session-persists",
+          s == 200 and q1("SELECT session FROM agents WHERE agent_id='cs'")["session"] == "c" * 32, (s, r))
+
+    # a second process on the same agent id must not kill the holder's task,
+    # no matter how long it polls with an empty exec_state past the grace
+    register("dp", owner="u13")
+    SA, SB = "a" * 32, "b" * 32
+    tid = new_task("dp", "two pollers")
+    _, d = call("POST", "/domains/team-a/agents/dp/poll",
+                {"block": False, "session": SA, "exec_state": {"tasks": []}})
+    lease = d["task"]["lease_id"]
+    call("POST", "/domains/team-a/agents/dp/poll",
+         {"block": False, "session": SA, "exec_state": {"tasks": [
+             {"task_id": tid, "lease_id": lease, "phase": "running", "expected_seconds": 60}]}})
+    for _ in range(3):  # zombie polls well past dispatch_grace, empty exec_state
+        call("POST", "/domains/team-a/agents/dp/poll",
+             {"block": False, "session": SB, "exec_state": {"tasks": []}})
+        time.sleep(2)
+    check("dual-poller/non-holder-cannot-kill",
+          q1("SELECT status FROM tasks WHERE id=?", (tid,))["status"] == "working")
+    check("dual-poller/audit-event",
+          bool(q1("SELECT 1 FROM task_events WHERE domain_id='team-a' AND task_id='reg:dp' AND type='dual_poller'")))
+    _, r = report("dp", tid, lease, "completed", output="holder wins")
+    check("dual-poller/holder-completes", r.get("accepted") is True, r)
 
     # receive_timeout: worker online, task in exec_state, but phase never reaches running
     register("rt", owner="u9")
