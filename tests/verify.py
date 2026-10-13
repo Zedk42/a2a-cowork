@@ -71,7 +71,10 @@ def call(method, path, body=None, agent=None, token=TOKEN):
         with urllib.request.urlopen(r, timeout=15) as x:
             return x.status, json.loads(x.read() or b"{}")
     except urllib.error.HTTPError as e:
-        raw = e.read()
+        try:
+            raw = e.read()
+        except OSError:  # an early rejection (413) can die mid-read: the status is enough
+            raw = b""
         try:
             return e.code, json.loads(raw or b"{}")
         except json.JSONDecodeError:
@@ -278,8 +281,9 @@ def server_checks():
         check("files/size-cap", False, "oversize accepted")
     except urllib.error.HTTPError as e:
         check("files/size-cap", e.code == 413, e.code)
-    except urllib.error.URLError as e:
-        check("files/size-cap", "Broken pipe" in str(e), e)  # server refused early, connection reset mid-send
+    except (urllib.error.URLError, OSError) as e:
+        # server refused early; the connection dies mid-send (pipe or reset)
+        check("files/size-cap", "pipe" in str(e) or "reset" in str(e).lower(), e)
     tid = call("POST", "/domains/team-a/tasks", {"target": "w", "text": "with file", "files": [fu["id"]]},
                agent="boss")[1]["task_id"]
     _, d = poll("w")
@@ -345,11 +349,11 @@ def server_checks():
     check("validation/non-string-text->400", s == 400, (s, r))
     check("validation/non-string-text-not-queued", not q1("SELECT 1 FROM tasks WHERE target='w' AND text='123'"))
     check("validation/role-without-identity->403", call("GET", "/domains/team-a/tasks?role=target")[0] == 403)
-    try:  # early 413 can also surface as a broken pipe mid-send, like the file cap
+    try:  # early 413 can also surface as a broken pipe/reset mid-send, like the file cap
         s, r = call("POST", "/domains/team-a/tasks", {"target": "w", "text": "x" * (1024 * 1024 + 1)}, agent="boss")
         check("validation/body-cap", s == 413, (s, r))
-    except urllib.error.URLError as e:  # call() already converts HTTPError to a status
-        check("validation/body-cap", "Broken pipe" in str(e), e)
+    except (urllib.error.URLError, OSError) as e:  # call() already converts HTTPError to a status
+        check("validation/body-cap", "pipe" in str(e) or "reset" in str(e).lower(), e)
 
     # client-supplied values land in stored state, so they must be type-checked
     tid = new_task("w", "expected guard")
