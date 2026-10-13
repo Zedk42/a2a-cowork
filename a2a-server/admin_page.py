@@ -4,11 +4,18 @@ and /admin/op (operator actions: invite / invite_revoke / kick / disable /
 enable / task_abort). Vanilla JS + hand-drawn SVG, no build step, no external assets
 (works fully offline on an intranet); everything user-supplied is rendered via
 textContent, so no HTML escaping is needed. Unauthenticated by design: it
-serves a trusted LAN. UI is bilingual (EN/中文, toggled in the header)."""
+serves a trusted LAN. UI is bilingual (EN/中文, toggled in the header).
+
+Rendering is section-based: each section (topology, agents, invites, tasks,
+the overview cards) keeps a signature of its data slice and is rebuilt only
+when that slice changes — the 3s snapshot never touches a steady DOM, so
+clicks and text selection are not interrupted. Filter inputs and the dialog
+live outside the rebuilt areas and keep their state."""
 
 ADMIN_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>A2A Co-Work</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23155eef'/%3E%3Ctext x='16' y='21.5' font-family='ui-monospace,Menlo,monospace' font-size='12' font-weight='700' fill='%23fff' text-anchor='middle'%3Ea2a%3C/text%3E%3C/svg%3E">
 <style>
 :root{
   --bg:#f2f4f7; --card:#ffffff; --ink:#101828; --muted:#475467; --soft:#667085;
@@ -40,14 +47,18 @@ header{position:sticky;top:0;z-index:20;background:var(--card);height:56px;paddi
 .btn.lang{padding:5px 11px;font-size:12px}
 .pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 2.4s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-@media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+@media (prefers-reduced-motion:reduce){.pulse{animation:none}.fadein{animation:none}}
 section{margin-top:28px}
-.sec-head{display:flex;align-items:center;gap:12px;margin:0 0 10px}
+.sec-head{display:flex;align-items:center;gap:10px;margin:0 0 10px}
 h2{font:600 16px/1.3 var(--sans);margin:0}
+.cnt{font:500 11px/1 var(--sans);color:var(--soft);background:var(--gray-tint);
+     border:1px solid var(--gray-bd);border-radius:999px;padding:3px 8px}
 .note{font:12px var(--sans);color:var(--soft)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
       padding:4px 20px 12px;box-shadow:var(--shadow)}
 .card.tbl{overflow-x:auto}  /* tables scroll, never spill; must not clip the topo panel */
+.fadein{animation:fadein .18s ease-out}
+@keyframes fadein{from{opacity:.35}to{opacity:1}}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
 th{font:600 11px/1.4 var(--sans);color:var(--soft);text-align:left;text-transform:uppercase;
    letter-spacing:.05em;padding:12px 12px 8px;border-bottom:1px solid var(--line)}
@@ -83,7 +94,8 @@ tr.brow td{background:var(--red-tint)}
 .dcard .dstats{border-top:1px solid var(--line);padding-top:14px;margin-top:16px}
 .dstat .n{font:600 20px/1 var(--sans);font-variant-numeric:tabular-nums;color:var(--ink)}
 .dstat .n.hot{color:var(--accent)}
-.dstat .l{font:400 12px/1 var(--sans);color:var(--soft);margin-top:6px}
+.dstat .n.fresh{color:var(--green)}
+.dstat .l{font:400 12px/1 var(--sans);color:var(--muted);margin-top:6px}
 /* domain detail */
 .back{display:inline-flex;align-items:center;gap:6px;font:13px var(--sans);
       color:var(--soft);text-decoration:none}
@@ -102,15 +114,17 @@ tr.brow td{background:var(--red-tint)}
 .tnode.off rect.body{fill:#f9fafb}  /* offline cards sit dimmer than live ones */
 .tnode.off .tname{fill:var(--soft)}
 .tnode:hover rect.body,.tnode.sel rect.body{stroke:var(--accent);stroke-width:1.5}
-.tava{fill:var(--blue-tint);stroke-width:1.5}
-.tava.on{stroke:#12b76a}
-.tava.off{stroke:#d0d5dd}
-.tinit{font:600 10px var(--sans);fill:var(--accent)}
+.tava{stroke-width:1.5}
+.tava.on{stroke:#12b76a} .tava.off{stroke:#d0d5dd}
+.tinit{font:600 10px var(--sans)}
 .tname{font:500 11px var(--mono);fill:var(--ink)}
 .towner{font:10px var(--mono);fill:var(--soft)}
 .tsrv{font:500 11px var(--mono);fill:#fff}
 .tbadge{font:600 10px var(--mono);fill:#fff}
 .srv rect{fill:var(--accent)}
+.legend{display:flex;gap:22px;align-items:center;justify-content:center;
+        padding:2px 0 10px;font:12px var(--sans);color:var(--soft)}
+.legend svg{margin-right:6px;vertical-align:-2px}
 .tpanel{margin-top:22px;border-top:1px solid var(--line);padding-top:16px;
         display:flex;gap:30px;flex-wrap:wrap;align-items:flex-start}
 .tpanel[hidden]{display:none}
@@ -130,15 +144,32 @@ tr.brow td{background:var(--red-tint)}
 .btn.pri{background:var(--accent);color:#fff;border-color:var(--accent)}
 .btn.pri:hover{background:var(--accent-dk);border-color:var(--accent-dk)}
 .btn.danger:hover{border-color:var(--red);color:var(--red)}
+.btn.arm{background:var(--red);border-color:var(--red);color:#fff}  /* armed confirm state */
 .btn svg{flex:none}
 .btn.icon-btn{padding:7px 9px}  /* icon-only (panel close): not as wide as labeled buttons */
 .tbl .btn{padding:4px 10px;font-size:12px;gap:5px}  /* row actions shrink a size vs page-level buttons */
 .tbl .btn svg{width:12px;height:12px}
 td .btn + .btn{margin-left:8px}  /* DOM-built buttons have no whitespace between them */
+.in{border:1px solid var(--line-strong);border-radius:8px;padding:6px 10px;font:12.5px var(--mono);
+    width:160px;background:#fff;color:var(--ink)}
+.in:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
+select.in{width:auto;font-family:var(--sans);cursor:pointer}
+.tbar{display:flex;gap:8px;margin-left:auto}  /* lives in the section head, outside rebuilds */
 /* task drill-down */
-#detail{display:none;background:var(--card);border:1px solid var(--line);border-left:2px solid var(--accent);
-        border-radius:8px;margin-top:24px;padding:12px 16px;max-height:28vh;overflow-y:auto;
-        font:12px/1.7 var(--mono);color:var(--muted);white-space:pre-wrap;word-break:break-all}
+#detail{display:none;background:var(--card);border:1px solid var(--line);
+        border-radius:8px;margin-top:24px;padding:12px 16px;max-height:42vh;overflow-y:auto}
+.dt-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-bottom:10px;
+         border-bottom:1px solid var(--line);position:sticky;top:-12px;background:var(--card)}
+.dt-id{font:500 13px var(--mono);color:var(--ink)}
+.dt-flow{font:12px var(--mono);color:var(--soft)}
+.dt-copy{margin-left:auto}
+.dt-cols{display:flex;gap:24px;flex-wrap:wrap;margin-top:10px}
+.dt-pane{flex:1 1 340px;min-width:0}
+.dt-label{font:600 11px var(--sans);color:var(--soft);text-transform:uppercase;
+          letter-spacing:.05em;margin-bottom:6px}
+.dt-body{font:12px/1.7 var(--mono);color:var(--muted);white-space:pre-wrap;word-break:break-word;
+         max-height:30vh;overflow-y:auto}
+.dt-body .who{color:var(--soft)}
 /* dialog + toast */
 dialog{border:1px solid var(--line);border-radius:12px;padding:22px 24px 18px;
        background:var(--card);color:var(--ink);max-width:560px;width:92%;box-shadow:var(--shadow-lg)}
@@ -164,6 +195,7 @@ dialog h3{font:600 16px/1.3 var(--sans);margin:0 0 6px}
 @media (max-width:640px){
   .wrap{padding:16px 16px 40px}
   header{padding:0 16px}
+  .tbar{margin-left:0}
 }
 </style></head><body>
 <header>
@@ -187,6 +219,9 @@ dialog h3{font:600 16px/1.3 var(--sans);margin:0 0 6px}
 const $ = s => document.querySelector(s);
 const dlg = $("#dlg");
 let DATA = null, view = {d: null, a: null};  // a: selected agent id (survives re-renders)
+let FILTER = {status: "", q: ""};            // task table; inputs live outside rebuilds
+let SIG = {}, MOUNTED = null;                // section key -> data signature; mounted route key
+let DETAIL = {id: null, status: null};       // open drill-down, for auto-refresh
 
 /* i18n: t(englishString) — zh table maps to Chinese, everything else falls
 through unchanged; one table beats a key scheme when English is the source */
@@ -208,6 +243,8 @@ const ZH = {  // server / agent / worker / driver / token stay English
   "just now": "刚刚",
   "{n}m ago": "{n} 分钟前", "{n}h ago": "{n} 小时前", "{n}d ago": "{n} 天前",
   "agent topology": "agent 拓扑", "loading": "加载中", "failed to load": "加载失败",
+  "all statuses": "全部状态", "filter…": "筛选…", "sure?": "确认？",
+  "Conversation": "对话", "Events": "事件",
 };
 const t = s => LANG === "zh" ? (ZH[s] || s) : s;
 
@@ -228,6 +265,7 @@ const ICONS = {
   enable:  '<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M17 11l2 2 4-4"/>',
   abort:   '<rect x="4" y="4" width="16" height="16" rx="3"/>',
   x:       '<path d="M18 6 6 18M6 6l12 12"/>',
+  copy:    '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 };
 function icon(name) {
   const svg = svgEl("svg", {viewBox: "0 0 24 24", width: "14", height: "14", fill: "none",
@@ -275,6 +313,7 @@ function ago(iso) {
   const n = s < 3600 ? Math.floor(s / 60) : s < 86400 ? Math.floor(s / 3600) : Math.floor(s / 86400);
   return t(s < 3600 ? "{n}m ago" : s < 86400 ? "{n}h ago" : "{n}d ago").replace("{n}", n);
 }
+const fresh = iso => iso && (Date.now() - Date.parse(iso)) / 1000 < 300;
 
 /* ---------- api ---------- */
 
@@ -301,71 +340,146 @@ function toast(msg) {
   toastT = setTimeout(() => box.classList.remove("on"), 2600);
 }
 
-/* ---------- routing + refresh ---------- */
+/* ---------- routing + section rendering ---------- */
 
 function route() {
   let h = location.hash;  // browsers percent-encode non-ASCII ids (团队一) in the hash
   try { h = decodeURIComponent(h); } catch {}
   const m = h.match(/^#\/d\/(.+)$/);  // \w is ASCII-only; unknown ids fall back to the overview
   view = {d: m ? m[1] : null, a: null};
+  FILTER = {status: "", q: ""};
+  DETAIL = {id: null, status: null};
+  SIG = {};
   $("#detail").style.display = "none";
   render();
 }
 window.addEventListener("hashchange", route);
 
+/* Sections are rebuilt only when their data slice changed (SIG). Filter inputs
+   and the dialog sit outside the rebuilt nodes, so focus and open state survive
+   every refresh; a section holding a text selection is left alone for a tick. */
+function section(key, sig, card, build) {
+  if (SIG[key] === sig) return;
+  const sel = getSelection();
+  if (!sel.isCollapsed && sel.rangeCount && sel.getRangeAt(0).intersectsNode(card)) return;
+  card.innerHTML = "";
+  build(card);
+  SIG[key] = sig;  // set only after a clean build: a throwing build retries next tick
+  card.classList.remove("fadein");
+  void card.offsetWidth;  // restart the fade so a refresh tick is perceptible, not jarring
+  card.classList.add("fadein");
+}
+
 function render() {
   if (!DATA) return;
   if (dlg.open) return;  // don't yank controls mid-dialog
-  // a real selection survives the rebuild; a plain click's collapsed caret
-  // must not block navigation (it once froze detail-view entry until reload)
-  const sel = getSelection();
-  if (!sel.isCollapsed && sel.rangeCount && $("#view").contains(sel.anchorNode)) return;
-  const v = $("#view");
-  v.innerHTML = "";
-  if (view.d) {
-    if (DATA.domains.some(d => d.id === view.d)) v.append(detailView(DATA, view.d));
-    else location.hash = "#/";  // domain removed from config
-    const open = DATA.agents.find(x => x.domain === view.d && x.agent_id === view.a);
-    if (open) showAgent(DATA, view.d, open);  // after append: #tpanel must be in the document
-  } else {
-    v.append(overview(DATA));
+  if (!DATA.domains.some(d => d.id === view.d)) view.d = null;  // domain removed from config
+  const key = view.d || "overview";
+  if (MOUNTED !== key) mount(key);
+  const did = view.d;
+  if (!did) {
+    const tick = Math.floor(Date.now() / 60000);  // relative times ("3m ago") advance on quiet sections
+    section("overview", JSON.stringify([DATA.domains, tick]), $("[data-k=overview]"), buildOverview);
+    return;
   }
+  const dm = DATA.domains.find(x => x.id === did);
+  const ags = DATA.agents.filter(a => a.domain === did);
+  const dts = DATA.tasks.filter(k => k.domain === did);
+  const tick = Math.floor(Date.now() / 60000);
+  section("head", JSON.stringify([dm, tick]), $("[data-k=head]"), c => buildHead(c, dm));
+  section("topo", JSON.stringify({a: ags,  // whole objects: the panel renders policy/driver/notify/description too
+                                  t: dts.filter(k => LIVE.has(k.status)).map(k => [k.target, k.id]),
+                                  sel: view.a, selTasks: agentTaskSlice(dts, view.a)}),
+          $("[data-k=topo]"), c => buildTopo(c, did, ags, dts));
+  section("agents", JSON.stringify({a: ags, dis: DATA.disabled.filter(b => b.domain === did)}),
+          $("[data-k=agents]"), c => buildAgents(c, did, ags));
+  section("invites", JSON.stringify(DATA.invites.filter(i => i.domain === did)),
+          $("[data-k=invites]"), c => buildInvites(c, did));
+  section("tasks", JSON.stringify({t: dts, f: FILTER}), $("[data-k=tasks]"), c => buildTasks(c, did, dts));
 }
 
-async function poll() {
-  if (document.hidden) return;
-  try {
-    const r = await api("/admin/data");
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    DATA = await r.json();
-    render();
-    $("#live-note").textContent = t("live · 3s");
-  } catch (e) {
-    $("#live-note").textContent = t("problem") + ": " + (e.message || e);
+function agentTaskSlice(dts, aid) {
+  if (!aid) return null;
+  return dts.filter(k => k.initiator === aid || k.target === aid).slice(0, 6)
+            .map(k => [k.created_at, k.initiator, k.target, k.status]);
+}
+
+function mount(key) {  // full rebuild: navigation or language switch only
+  MOUNTED = key;
+  SIG = {};
+  const v = $("#view");
+  v.innerHTML = "";
+  if (!view.d) {
+    const sec = el("section");
+    const h = el("div", "sec-head");
+    h.append(el("h2", null, t("Domains")));
+    sec.append(h);
+    const grid = el("div", "domains");  // the one grid: cards sit straight on the canvas
+    grid.setAttribute("data-k", "overview");
+    sec.append(grid);
+    v.append(sec);
+    return;
   }
+  const back = el("a", "back");
+  back.append(icon("left"), el("span", null, t("Domains")));
+  back.setAttribute("href", "#/");
+  const head = el("div");  // no card chrome: the domain banner is layout, not a panel
+  head.setAttribute("data-k", "head");
+  v.append(back, head, shell("topo", "topo", t("Topology"), null, false), shell("agents", "tbl", t("Agents"), null, true),
+           shell("invites", "tbl", t("Invites"), null, true), tasksShell());
+}
+
+function shell(key, cls, title, toolbar, badge) {
+  const sec = el("section");
+  const head = el("div", "sec-head");
+  head.append(el("h2", null, title));
+  if (badge) {  // count pills belong to the tables; the topology is a picture
+    const cnt = el("span", "cnt", "");
+    cnt.setAttribute("data-cnt", key);
+    head.append(cnt);
+  }
+  if (toolbar) head.append(toolbar);
+  const card = el("div", "card" + (cls ? " " + cls : ""));
+  card.setAttribute("data-k", key);
+  sec.append(head, card);
+  return sec;
+}
+
+function tasksShell() {
+  const sel = el("select", "in");
+  sel.setAttribute("data-k", "status");
+  sel.append(new Option(t("all statuses"), ""));
+  for (const s of ["pending-approval", "available", "dispatched", "working", "input-required",
+                   "completed", "failed", "canceled"]) sel.append(new Option(s, s));
+  sel.value = FILTER.status;
+  sel.onchange = () => { FILTER.status = sel.value; render(); };
+  const q = el("input", "in");
+  q.setAttribute("data-k", "q");
+  q.placeholder = t("filter…");
+  q.value = FILTER.q;
+  q.oninput = () => { FILTER.q = q.value; render(); };
+  const bar = el("div", "tbar");
+  bar.append(sel, q);
+  return shell("tasks", "tbl", t("Recent tasks"), bar);
 }
 
 /* ---------- overview ---------- */
 
 function stat(n, l, hot) {
   const s = el("div", "dstat");
-  s.append(el("div", "n" + (hot ? " hot" : ""), n), el("div", "l", l));
+  s.append(el("div", "n" + (hot === "hot" ? " hot" : hot === "fresh" ? " fresh" : ""), n), el("div", "l", l));
   return s;
 }
 function dstats(dm) {
   const st = el("div", "dstats");
   st.append(stat(`${dm.online}/${dm.agents}`, t("agents online")),
-            stat(String(dm.inflight), t("in-flight"), dm.inflight > 0),
-            stat(ago(dm.last_event), t("last event")));
+            stat(String(dm.inflight), t("in-flight"), dm.inflight > 0 && "hot"),
+            stat(ago(dm.last_event), t("last event"), dm.last_event && fresh(dm.last_event) && "fresh"));
   return st;
 }
 
-function overview(d) {
-  const frag = document.createDocumentFragment();
-  const head = el("div", "sec-head");
-  head.append(el("h2", null, t("Domains")));
-  const grid = el("div", "domains");
-  for (const dm of d.domains) {
+function buildOverview(grid) {  // the mount node IS the .domains grid — no nesting
+  for (const dm of DATA.domains) {
     const c = el("div", "dcard");
     c.onclick = () => { location.hash = "#/d/" + dm.id; };
     const top = el("div", "dmeta");
@@ -373,26 +487,17 @@ function overview(d) {
     c.append(top, dstats(dm));
     grid.append(c);
   }
-  frag.append(head, grid);
-  return frag;
 }
 
 /* ---------- domain detail ---------- */
 
-function detailView(d, did) {
-  const dm = d.domains.find(x => x.id === did);
-  const frag = document.createDocumentFragment();
-  const back = el("a", "back");
-  back.append(icon("left"), el("span", null, t("Domains")));
-  back.setAttribute("href", "#/");
+function buildHead(card, dm) {
   const head = el("div", "domhead");
   const invite = el("button", "btn pri");
   invite.append(icon("plus"), el("span", null, t("invite")));
-  invite.onclick = () => inviteDialog(did);
-  head.append(el("h2", "dtitle", did), dstats(dm), invite);
-  frag.append(back, head, topoSection(d, did));
-  frag.append(agentsSection(d, did), invitesSection(d, did), tasksSection(d, did));
-  return frag;
+  invite.onclick = () => inviteDialog(dm.id);
+  head.append(el("h2", "dtitle", dm.id), dstats(dm), invite);
+  card.append(head);
 }
 
 /* ---------- topology ---------- */
@@ -403,15 +508,15 @@ function svgEl(tag, attrs, parent) {
   if (parent) parent.append(e);
   return e;
 }
+const hue = s => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 360;
 
-function topoSVG(d, did) {
+function topoSVG(ags, dts) {
   // hub-and-spoke: agents long-poll the server, never each other
   const W = 940, H = 470, cx = W / 2, cy = H / 2 + 4, BW = 132, BH = 40;
   const svg = svgEl("svg", {viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": t("agent topology")});
   const defs = svgEl("defs", null, svg);
   const lift = svgEl("filter", {id: "lift", x: "-40%", y: "-40%", width: "180%", height: "180%"}, defs);
   svgEl("feDropShadow", {dx: 0, dy: 1.5, stdDeviation: 2, "flood-color": "#101828", "flood-opacity": .13}, lift);
-  const ags = d.agents.filter(a => a.domain === did);
   const pos = new Map();
   const step = 2 * Math.PI / Math.max(ags.length, 1);
   const rx = Math.min(370, 190 + ags.length * 20), ry = 150;
@@ -437,14 +542,19 @@ function topoSVG(d, did) {
     const p = pos.get(a.agent_id);
     const g = svgEl("g", {class: "tnode" + (a.online ? "" : " off") + (view.a === a.agent_id ? " sel" : ""),
                           transform: `translate(${p.x},${p.y})`}, svg);
-    g.onclick = () => showAgent(d, did, a);
+    const tip = svgEl("title", null, g);  // native tooltip: the full id, untruncated
+    tip.textContent = `${a.agent_id} · ${a.owner}`;
+    g.onclick = () => { view.a = a.agent_id; render(); };
     svgEl("rect", {class: "body", x: -BW / 2, y: -BH / 2, width: BW, height: BH, rx: 10, filter: "url(#lift)"}, g);
-    svgEl("circle", {class: "tava " + (a.online ? "on" : "off"), cx: -BW / 2 + 20, r: 10}, g);
-    svgEl("text", {x: -BW / 2 + 20, y: 3.5, "text-anchor": "middle", class: "tinit"}, g).textContent =
-        (a.owner[0] || "?").toUpperCase();
+    const h = hue(a.owner);  // stable per owner: teammates of one owner share a shade
+    const ava = svgEl("circle", {class: "tava " + (a.online ? "on" : "off"), cx: -BW / 2 + 20, r: 10,
+                                 fill: `hsl(${h} 70% 95%)`}, g);
+    const init = svgEl("text", {x: -BW / 2 + 20, y: 3.5, "text-anchor": "middle",
+                                class: "tinit", fill: `hsl(${h} 45% 38%)`}, g);
+    init.textContent = (a.owner[0] || "?").toUpperCase();
     svgEl("text", {x: -BW / 2 + 38, y: 4, class: "tname"}, g).textContent =
-        a.agent_id.length > 13 ? a.agent_id.slice(0, 12) + "…" : a.agent_id;  // full id in the panel
-    const live = d.tasks.filter(k => k.domain === did && k.target === a.agent_id && LIVE.has(k.status)).length;
+        a.agent_id.length > 13 ? a.agent_id.slice(0, 12) + "…" : a.agent_id;
+    const live = dts.filter(k => k.target === a.agent_id && LIVE.has(k.status)).length;
     if (live) {  // in-flight count
       svgEl("circle", {cx: BW / 2 + 1, cy: -BH / 2 - 1, r: 8.5, fill: "var(--accent)"}, g);
       svgEl("text", {x: BW / 2 + 1, y: -BH / 2 + 2.4, "text-anchor": "middle", class: "tbadge"}, g).textContent = String(live);
@@ -455,30 +565,26 @@ function topoSVG(d, did) {
   return svg;
 }
 
-/* ---------- sections ---------- */
+const LG_LINE = cls =>  // legend line sample, same stroke language as the spokes
+  `<svg width="20" height="8" viewBox="0 0 20 8"><line x1="1" y1="4" x2="19" y2="4" ${cls}/></svg>`;
 
-function section(title, cardCls) {
-  const sec = el("section");
-  const head = el("div", "sec-head");
-  head.append(el("h2", null, title));
-  const card = el("div", "card" + (cardCls ? " " + cardCls : ""));
-  sec.append(head, card);
-  return [sec, card];
-}
-
-function topoSection(d, did) {
-  const [sec, card] = section(t("Topology"), "topo");
-  card.append(topoSVG(d, did));
+function buildTopo(card, did, ags, dts) {
+  card.append(topoSVG(ags, dts));
+  const lg = el("div", "legend");  // labels are our i18n strings — the only innerHTML sink
+  lg.innerHTML =
+    `<span>${LG_LINE('stroke="var(--accent)" stroke-opacity=".45" stroke-width="1.5"')}${t("online")}</span>` +
+    `<span>${LG_LINE('stroke="#d0d5dd" stroke-width="1.5" stroke-dasharray="4 4"')}${t("offline")}</span>` +
+    `<span><svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.5" fill="var(--accent)"/>` +
+    `<text x="6" y="9" text-anchor="middle" font-size="8" font-weight="600" fill="#fff">n</text></svg>${t("in-flight")}</span>`;
+  const open = ags.find(a => a.agent_id === view.a);  // a kicked selection closes; never an empty panel
   const panel = el("div", "tpanel");
   panel.id = "tpanel";
-  panel.hidden = true;
-  card.append(panel);
-  return sec;
+  panel.hidden = !open;
+  card.append(lg, panel);
+  if (open) showAgent(panel, open, dts, did);
 }
 
-function showAgent(d, did, a) {
-  view.a = a.agent_id;
-  const p = $("#tpanel");
+function showAgent(p, a, dts, did) {
   p.hidden = false;
   p.innerHTML = "";
   const head = el("div");
@@ -492,7 +598,7 @@ function showAgent(d, did, a) {
   }
   p.append(meta);
   if (a.description) p.append(el("p", "tp-desc", a.description));
-  const mine = d.tasks.filter(k => k.domain === did && (k.initiator === a.agent_id || k.target === a.agent_id)).slice(0, 6);
+  const mine = dts.filter(k => k.initiator === a.agent_id || k.target === a.agent_id).slice(0, 6);
   if (mine.length) {
     const tb = el("table", "tp-tasks");
     for (const k of mine)
@@ -505,48 +611,57 @@ function showAgent(d, did, a) {
   const close = el("button", "btn icon-btn");
   close.append(icon("x"));
   close.setAttribute("aria-label", t("close"));
-  close.onclick = () => { view.a = null; p.hidden = true; };
-  acts.append(close, ...agentActs(d, did, a.agent_id));
+  close.onclick = () => { view.a = null; render(); };
+  acts.append(close, ...agentActs(did, a.agent_id));
   p.append(acts);
 }
 
 /* ---------- agents / invites / tasks ---------- */
 
-function mkBtn(label, cls, fn, ico) {
+function mkBtn(label, cls, fn, ico, confirmable) {
   const b = el("button", "btn " + (cls || ""));
   if (ico) b.append(icon(ico));
-  if (label) b.append(el("span", null, label));
+  const lab = el("span", null, label);
+  b.append(lab);
+  let armed = null;
   b.onclick = e => {  // hold the button until the op settles; a second click would re-fire it
     e.stopPropagation();
+    if (confirmable && !armed) {  // destructive ops arm first: one click to arm, the next to fire
+      b.classList.add("arm");
+      lab.textContent = t("sure?");
+      armed = setTimeout(() => { armed = null; b.classList.remove("arm"); lab.textContent = label; }, 2500);
+      return;
+    }
+    clearTimeout(armed);
+    armed = null;
     b.disabled = true;
-    Promise.resolve(fn()).finally(() => { b.disabled = false; });
+    Promise.resolve(fn()).finally(() => { b.disabled = false; b.classList.remove("arm"); lab.textContent = label; });
   };
   return b;
 }
-function agentActs(d, did, id) {
-  return [mkBtn(t("kick"), "", () => run(() => op({op: "kick", domain: did, agent_id: id})), "kick"),
-          mkBtn(t("disable"), "danger", () => run(() => op({op: "disable", domain: did, agent_id: id})), "disable")];
+function agentActs(did, id) {
+  return [mkBtn(t("kick"), "", () => run(() => op({op: "kick", domain: did, agent_id: id})), "kick", true),
+          mkBtn(t("disable"), "danger", () => run(() => op({op: "disable", domain: did, agent_id: id})), "disable", true)];
 }
 
-function agentsSection(d, did) {
-  const [sec, card] = section(t("Agents"), "tbl");
+function buildAgents(card, did, ags) {
   const tb = el("table");
-  row(tb, [t("agent"), t("owner"), t("status"), t("policy"), "driver", ""], true);
-  for (const a of d.agents.filter(a => a.domain === did)) {
+  row(tb, ["agent", t("owner"), t("status"), t("policy"), "driver", ""], true);
+  for (const a of ags) {
     const tr = row(tb, [span("name", a.agent_id), a.owner,
                        [span(a.online ? "dot on" : "dot off"), a.online ? t("online") : t("offline")],
-                       a.accept_policy, a.driver_kind, agentActs(d, did, a.agent_id)]);
+                       a.accept_policy, a.driver_kind, agentActs(did, a.agent_id)]);
     tr.classList.add("arow");
-    tr.onclick = e => { if (!e.target.closest("button")) showAgent(d, did, a); };
+    tr.onclick = e => { if (!e.target.closest("button")) { view.a = a.agent_id; render(); } };
   }
-  for (const b of d.disabled.filter(b => b.domain === did))
+  for (const b of DATA.disabled.filter(b => b.domain === did))
     row(tb, [span("name", b.agent_id), "", span("tag red", t("disabled")), "", "",
              mkBtn(t("enable"), "", () => run(() => op({op: "enable", domain: did, agent_id: b.agent_id})
                  .then(() => toast(t("block lifted — the agent returns when its worker restarts")))), "enable")])
         .classList.add("brow");
-  if (!d.agents.some(a => a.domain === did) && !d.disabled.some(b => b.domain === did)) noteRow(tb, t("none"), 6);
+  if (!ags.length && !DATA.disabled.some(b => b.domain === did)) noteRow(tb, t("no agents registered"), 6);
   card.append(tb);
-  return sec;
+  setCnt("agents", ags.length);
 }
 
 function noteRow(tb, text, n) {
@@ -559,23 +674,24 @@ function noteRow(tb, text, n) {
   tb.append(tr);
 }
 
-function invitesSection(d, did) {
-  const [sec, card] = section(t("Invites"), "tbl");
+function buildInvites(card, did) {
   const tb = el("table");
   row(tb, [t("code"), t("note"), ""], true);
-  const invs = d.invites.filter(i => i.domain === did);
+  const invs = DATA.invites.filter(i => i.domain === did);
   for (const i of invs)
     row(tb, [span("mono", i.code), i.note || "",
-             mkBtn(t("revoke"), "", () => run(() => op({op: "invite_revoke", code: i.code})), "x")]);
+             mkBtn(t("revoke"), "", () => run(() => op({op: "invite_revoke", code: i.code})), "x", true)]);
   if (!invs.length) noteRow(tb, t("none"), 3);
   card.append(tb);
-  return sec;
+  setCnt("invites", invs.length);
 }
 
-function tasksSection(d, did) {
-  const [sec, card] = section(t("Recent tasks"), "tbl");
+function buildTasks(card, did, dts) {
+  const q = FILTER.q.toLowerCase();
+  const tks = dts.filter(k => (!FILTER.status || k.status === FILTER.status) &&
+      (!q || k.id.startsWith(q) || k.initiator.toLowerCase().includes(q) ||
+       k.target.toLowerCase().includes(q) || (k.fail_reason || "").toLowerCase().includes(q)));
   const tb = el("table");
-  const tks = d.tasks.filter(k => k.domain === did);
   const showReason = tks.some(k => k.fail_reason);
   const cols = [t("created"), t("id"), t("from"), t("to"), t("status")]
       .concat(showReason ? [t("reason")] : [], [""]);
@@ -585,14 +701,19 @@ function tasksSection(d, did) {
                    span("tag " + (TAG[k.status] || "gray"), k.status)];
     if (showReason) cells.push(k.fail_reason || "");
     cells.push(TERMINAL.has(k.status) ? ""
-              : mkBtn(t("abort"), "", () => run(() => op({op: "task_abort", domain: did, task_id: k.id})), "abort"));
+              : mkBtn(t("abort"), "", () => run(() => op({op: "task_abort", domain: did, task_id: k.id})), "abort", true));
     const tr = row(tb, cells);
     tr.classList.add("tk");
     tr.onclick = e => { if (!e.target.closest("button")) showTask(k.id); };
   }
   if (!tks.length) noteRow(tb, t("no tasks yet"), cols.length);
   card.append(tb);
-  return sec;
+  setCnt("tasks", tks.length);
+}
+
+function setCnt(key, n) {
+  const c = document.querySelector(`[data-cnt="${key}"]`);
+  if (c) c.textContent = n;
 }
 
 /* ---------- invite dialog ---------- */
@@ -648,21 +769,63 @@ function inviteDialog(did) {
 async function showTask(id) {
   const detail = $("#detail");
   detail.style.display = "block";
-  detail.textContent = t("loading") + " " + id + " …";
+  detail.textContent = t("loading") + " " + id.slice(0, 8) + " …";
+  DETAIL = {id, status: DETAIL.id === id ? DETAIL.status : null};
   try {
     const r = await api(`/admin/task/${id}`);
     const d = await r.json();
+    if (DETAIL.id !== id) return;  // stale response: the user moved on, or a newer click won
     if (!r.ok) { detail.textContent = JSON.stringify(d); return; }
-    const lines = [`${d.id}  ${d.initiator} -> ${d.target}  ${d.status}${d.fail_reason ? " (" + d.fail_reason + ")" : ""}`];
-    for (const m of d.convo) lines.push(`[${m.at}] ${m.from}: ${m.text}`);
-    for (const e of d.events) lines.push(`[${e.created_at}] #${e.seq} ${e.type} ${e.payload}`);
-    detail.textContent = lines.join("\n");
+    DETAIL = {id, status: d.status};
+    detail.innerHTML = "";
+    const head = el("div", "dt-head");
+    head.append(span("tag " + (TAG[d.status] || "gray"), d.status),
+                el("span", "dt-id", d.id.slice(0, 8)),
+                el("span", "dt-flow", `${d.initiator} → ${d.target}`));
+    if (d.fail_reason) head.append(span("tag red", d.fail_reason));
+    const copy = el("button", "btn icon-btn dt-copy");
+    copy.append(icon("copy"));
+    copy.setAttribute("aria-label", "copy");
+    copy.onclick = () => copyText(JSON.stringify(d));
+    head.append(copy);
+    const cols = el("div", "dt-cols");
+    const pane = (label, lines) => {
+      const p = el("div", "dt-pane");
+      p.append(el("div", "dt-label", label));
+      const b = el("div", "dt-body");
+      for (const [who, text] of lines) {
+        if (who) b.append(el("span", "who", who));
+        b.append(document.createTextNode(text + "\n"));
+      }
+      p.append(b);
+      return p;
+    };
+    cols.append(pane(t("Conversation"), d.convo.map(m => [`[${m.at}] ${m.from}: `, m.text])),
+                pane(t("Events"), d.events.map(e => [`#${e.seq} ${e.type} `, e.payload])));
+    detail.append(head, cols);
     detail.scrollIntoView({block: "nearest", behavior: "smooth"});
   } catch (e) {
-    detail.textContent = t("failed to load") + " " + id + ": " + e;
+    detail.textContent = t("failed to load") + " " + id.slice(0, 8) + ": " + e;
   }
 }
 
+/* ---------- refresh ---------- */
+
+async function poll() {
+  if (document.hidden) return;
+  try {
+    const r = await api("/admin/data");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    DATA = await r.json();
+    render();
+    $("#live-note").textContent = t("live · 3s");
+    // an open drill-down on a live task follows its progress
+    const k = DATA.tasks.find(k => k.id === DETAIL.id);
+    if (k && DETAIL.status !== k.status) showTask(DETAIL.id);
+  } catch (e) {
+    $("#live-note").textContent = t("problem") + ": " + (e.message || e);
+  }
+}
 
 /* ---------- boot ---------- */
 
@@ -676,7 +839,9 @@ $("#lang").onclick = () => {
   LANG = LANG === "zh" ? "en" : "zh";
   try { localStorage.setItem("lang", LANG); } catch {}  // storage may be blocked
   applyLang();
+  MOUNTED = null;  // shells carry translated titles: rebuild them
   render();
+  if (DETAIL.id) showTask(DETAIL.id);  // the open drill-down is not section-managed
 };
 applyLang();
 route();

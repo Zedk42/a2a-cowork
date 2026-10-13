@@ -445,6 +445,11 @@ def server_checks():
     _, d = call("POST", "/domains/team-a/agents/dp/poll",
                 {"block": False, "session": SA, "exec_state": {"tasks": []}})
     lease = d["task"]["lease_id"]
+    # delivery leases under the REGISTERED session, not the raw poller: a poller
+    # superseded mid-suspend must hand its steal to the registered process's grace
+    check("dual-poller/lease-under-registered-session",
+          q1("SELECT lease_session s FROM tasks WHERE id=?", (tid,))["s"]
+          == q1("SELECT session s FROM agents WHERE agent_id='dp'")["s"])
     call("POST", "/domains/team-a/agents/dp/poll",
          {"block": False, "session": SA, "exec_state": {"tasks": [
              {"task_id": tid, "lease_id": lease, "phase": "running", "expected_seconds": 60}]}})

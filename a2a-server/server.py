@@ -109,6 +109,11 @@ now = time.time
 AGENT_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")  # ids travel in URL paths and the
 # x-agent-id header: a "/" matches no route (404 poll loop), non-ASCII breaks the header
 SESSION_RE = re.compile(r"[0-9a-f]{16,64}")  # a poller's self-declared process identity
+
+
+def declared_session(b):
+    s = b.get("session")
+    return s if isinstance(s, str) and SESSION_RE.fullmatch(s) else None
 INVITE_ABC = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # unambiguous: no 0/O, 1/I/L
 
 
@@ -377,9 +382,7 @@ async def register_core(d, b, fresh=False):
     ts = now()
     # the poller's identity: client-declared per process when present (workers
     # since per-poller sessions), server-generated otherwise (legacy semantics)
-    sess = b.get("session")
-    if not (isinstance(sess, str) and SESSION_RE.fullmatch(sess)):
-        sess = uuid.uuid4().hex
+    sess = declared_session(b) or uuid.uuid4().hex
     prev = q1("SELECT owner_username o FROM agents WHERE domain_id=? AND agent_id=?", (d, b["agent_id"]))
     if fresh:
         guard_new(d, b)  # re-check: the IM-await window is the race
@@ -653,14 +656,14 @@ async def poll(d, aid, req: Request):
     if (exp := DEREGISTERED.get((d, aid), 0)) and now() < exp:
         raise ApiErr(410, "deregistered")  # every poll inside the window gets 410, not just the first
     agent = require_agent(d, aid)
-    raw = b.get("session")
-    poller = raw if isinstance(raw, str) and SESSION_RE.fullmatch(raw) else agent["session"]
-    if poller != agent["session"] and not q1(
-            "SELECT 1 FROM task_events WHERE domain_id=? AND task_id=? AND type='dual_poller'",
-            (d, f"reg:{aid}")):
-        # audit trail only: a second live process is polling under this id —
-        # delivery alternates between the two until the operator stops one
-        emit(f"reg:{aid}", d, "dual_poller", {"poller": poller[:8]})
+    poller = declared_session(b) or agent["session"]
+    if poller != agent["session"]:
+        p8 = poller[:8]
+        if not q1("SELECT 1 FROM task_events WHERE domain_id=? AND task_id=? AND type='dual_poller' "
+                  "AND payload LIKE ?", (d, f"reg:{aid}", f'%"{p8}"%')):
+            # audit trail only: a poller this registration does not know about —
+            # one event per offender, kept until retention
+            emit(f"reg:{aid}", d, "dual_poller", {"poller": p8})
     st = b.get("exec_state") if isinstance(b.get("exec_state"), dict) else {"tasks": []}
     seen = [t for t in st.get("tasks", []) if isinstance(t, dict)
             and isinstance(t.get("task_id"), str) and t.get("task_id")]  # str guard: a non-str must not reach the SQL binding
@@ -689,10 +692,11 @@ async def poll(d, aid, req: Request):
 
     async def deliver():
         # re-read inside deliver: the second call runs AFTER the long-poll await, during
-        # which the agent row may have been deleted — the existence check must be
-        # fresh. The lease goes to THIS poller (captured at request start): the
-        # holder is the one whose exec_state reports keep the task alive.
-        a = q1("SELECT driver_kind FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
+        # which the agent may have re-registered (fresh session) or been deleted.
+        # Leasing under the CURRENT row session hands the task to the registered
+        # process: its own grace adjudication then self-heals a delivery stolen
+        # by a poller that was superseded mid-suspend (its dead socket swallows it).
+        a = q1("SELECT session, driver_kind FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
         if not a:
             return None  # deregistered while we were suspended
         seen_ids = {s["task_id"] for s in seen}
@@ -713,7 +717,7 @@ async def poll(d, aid, req: Request):
             return None
         lease = uuid.uuid4().hex
         if x("UPDATE tasks SET status='dispatched', lease_id=?, lease_session=?, dispatched_at=? WHERE id=? AND status='available'",
-             (lease, poller, now(), row["id"])) != 1:
+             (lease, a["session"], now(), row["id"])) != 1:
             return None
         DB.commit()
         emit(row["id"], d, "state_change", {"to": "dispatched"})
