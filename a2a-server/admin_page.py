@@ -628,9 +628,12 @@ function inviteDialog(did) {
         c.onclick = () => copyText(c.textContent);
         body.append(c);
       };
-      mk("macOS · Linux", "~/a2a-cowork/a2a-worker/.venv/bin/python", "cd ~/a2a-cowork/a2a-skill");
+      // the prefix bootstraps a fresh machine (clone + venv + pyyaml — never
+      // starts the worker); on an installed machine it is a no-op
+      mk("macOS · Linux", "~/a2a-cowork/a2a-worker/.venv/bin/python",
+         `[ -x ~/a2a-cowork/a2a-worker/.venv/bin/python ] || (git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork && cd ~/a2a-cowork/a2a-worker && python3 -m venv .venv && .venv/bin/pip install -q pyyaml); cd ~/a2a-cowork/a2a-skill`);
       mk("Windows", "%USERPROFILE%\\a2a-cowork\\a2a-worker\\.venv\\Scripts\\python.exe",
-         "cd %USERPROFILE%\\a2a-cowork\\a2a-skill");
+         `if not exist "%USERPROFILE%\\a2a-cowork\\a2a-worker\\.venv\\Scripts\\python.exe" (git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git "%USERPROFILE%\\a2a-cowork" && cd /d "%USERPROFILE%\\a2a-cowork\\a2a-worker" && py -3 -m venv .venv && .venv\\Scripts\\pip install -q pyyaml) & cd /d "%USERPROFILE%\\a2a-cowork\\a2a-skill"`);
     } catch (e) {
       create.disabled = false;
       toast(t("failed") + ": " + (e.message || e));

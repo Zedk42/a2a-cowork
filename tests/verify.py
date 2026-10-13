@@ -5,6 +5,8 @@
 
 Scratch state lives in tests/_scratch (wiped on start, removed again on success,
 kept for inspection when a check fails — the worker logs are in there).
+POSIX-only harness (venv bin paths, sh driver commands) — Windows behavior is
+not covered here.
 """
 import json
 import os
@@ -646,6 +648,13 @@ def worker_checks():
     det = wait_status(new_task("wk", "ask"), "input-required")
     check("worker/need-input-marker", det["status"] == "input-required" and "branch" in json.dumps(det["convo"]), det)
 
+    # the marker must be the LAST line: merely mentioning it mid-text is a completion
+    w.stop()
+    w = Worker("wk", '{kind: command, cmd: \'echo "we discussed NEED_INPUT: but finished"; echo done\', timeout: 60, output: tail}', home)
+    w.wait_online()
+    det = wait_status(new_task("wk", "mentions marker"), "completed")
+    check("worker/marker-mid-text-completes", det["status"] == "completed", det)
+
     # file roundtrip with a real worker: input materialized to files/, outbox uploaded back
     # (two outbox files also exercise the one-upload-per-heartbeat-tick path)
     w.stop()
@@ -662,6 +671,20 @@ def worker_checks():
     if rid:
         got, _ = fetch(rid)
         check("worker/outbox-download", got == b"roundtrip-payload-7", got[:30])
+
+    # an IR rerun reuses the workspace: last attempt's out/ files must not re-upload
+    w.stop()
+    w = Worker("wk", '''{kind: command, cmd: 'if [ ! -f .ran ]; then touch .ran; mkdir -p out; echo stale > out/stale.txt; echo "NEED_INPUT: again?"; else mkdir -p out; echo fresh > out/fresh.txt; cat; fi', timeout: 60, output: tail}''', home)
+    w.wait_online()
+    tid = new_task("wk", "rerun outbox")
+    det = wait_status(tid, "input-required")
+    check("worker/ir-rerun-first-asks", det["status"] == "input-required", det)
+    call("POST", f"/domains/team-a/tasks/{tid}/messages", {"text": "go"}, agent="boss")
+    det = wait_status(tid, "completed", timeout=30)
+    names = {f["name"] for f in det["convo"][-1].get("files", [])}  # the RESULT message:
+    # stale.txt legitimately rides the IR message (uploaded before that report),
+    # but the rerun's result must carry only this attempt's out/ files
+    check("worker/ir-rerun-stale-out-dropped", det["status"] == "completed" and names == {"fresh.txt"}, names)
 
     # a long task survives past online_timeout (poll is the heartbeat), then cancel kills the driver
     w.stop()

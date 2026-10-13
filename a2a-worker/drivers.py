@@ -34,11 +34,14 @@ def _kill(proc):
 
 
 def _marker_hit(marker, output):
-    for line in output[-2000:].splitlines():
-        if re.search(marker, line):
-            q = line.split(":", 1)[1].strip() if ":" in line else ""
-            return q or "(question not captured on the marker line — see the task output)"
-    return None
+    # the marker must be the LAST output line: a completed answer that merely
+    # mentions the protocol mid-text must not stall the task as input-required
+    lines = output[-2000:].rstrip().splitlines()
+    if not lines or not re.search(marker, lines[-1]):
+        return None
+    line = lines[-1]
+    q = line.split(":", 1)[1].strip() if ":" in line else ""
+    return q or "(question not captured on the marker line — see the task output)"
 
 
 def _last_json(raw):

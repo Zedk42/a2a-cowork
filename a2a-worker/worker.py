@@ -10,6 +10,7 @@ import argparse
 import atexit
 import json
 import os
+import shutil
 import signal
 import sys
 import threading
@@ -49,11 +50,15 @@ def _positive(v):
 NEED_INPUT_MARKER = r"^NEED_INPUT:"  # driver prints this line LAST to ask one question
 
 
-def load_cfg():
+def _read_cfg():
     p = Path(os.environ.get("A2A_WORKER_CONFIG", HERE / "worker.yaml"))
     if not p.exists():
         sys.exit(f"config not found: {p} (copy worker.example.yaml to worker.yaml)")
-    cfg = _expand(yaml.safe_load(p.read_text()))
+    return _expand(yaml.safe_load(p.read_text()))
+
+
+def load_cfg():
+    cfg = _read_cfg()
     missing = [k for k in ("server_url", "domain", "domain_token") if not cfg.get(k)]
     a = cfg.get("agent") or {}
     missing += [f"agent.{k}" for k in ("id", "owner") if not a.get(k)]
@@ -79,6 +84,15 @@ def load_cfg():
             sys.exit(f"worker.yaml error: {num} must be a positive number, got {cfg.get(num)!r}")
     if "${" in str(cfg.get("domain_token", "")):
         sys.exit("worker.yaml error: domain_token still contains unexpanded ${ENV} — variable unset?")
+    return cfg
+
+
+def load_cfg_min():
+    """stop/report need only agent.id (the loopback port derives from it) — a
+    config the worker itself would reject is exactly when stop must still work."""
+    cfg = _read_cfg()
+    if not str(((cfg.get("agent") or {}).get("id")) or "").strip():
+        sys.exit("worker.yaml has no agent.id — cannot locate the worker")
     return cfg
 
 
@@ -140,8 +154,11 @@ def worker_lock(cfg):
 
 
 def local_port(cfg):
-    if cfg.get("local_port"):
-        return int(cfg["local_port"])
+    try:
+        if cfg.get("local_port"):
+            return int(cfg["local_port"])
+    except (TypeError, ValueError):
+        pass  # a broken override must not crash `stop`: fall back to the derived default
     # stable per-agent default (sha256, NOT hash() — that is randomized per process)
     import hashlib
     return 7000 + int(hashlib.sha256(cfg["agent"]["id"].encode()).hexdigest()[:4], 16) % 1000
@@ -264,12 +281,19 @@ class Runner:
                 if 400 <= s2 < 500:
                     raise RuntimeError(f"outbox upload rejected: HTTP {s2} for {nm}")
                 return False
-            self.uploaded[nm] = json.loads(body)["id"]
+            try:
+                self.uploaded[nm] = json.loads(body)["id"]
+            except (ValueError, KeyError, TypeError):  # a garbled 200 is transient trouble, not a crash
+                print(f"[worker] outbox upload {nm}: non-JSON response, retrying", flush=True)
+                return False
             return True
         return list(self.uploaded.values())
 
     def _run(self):
         try:
+            # an input-required rerun reuses this workspace: last attempt's out/
+            # files must not ride along as this attempt's results
+            shutil.rmtree(os.path.join(self._ws(), "out"), ignore_errors=True)
             if self.task.get("files"):
                 try:
                     self._fetch_files()
@@ -316,6 +340,8 @@ def loop(cfg):
         hold = cur is not None and not cur.reported
         st = {"block": cur is None, "exec_state": {"tasks": [cur.exec_state()] if hold else []}}
         s, r = api(cfg, "POST", f"{base}/poll", st)
+        if cur is None and s in (200, 204):
+            backoff = 1  # idle + answered: clear stale backoff; a held task keeps its retry pacing
         if s == 200 and "control" in r:
             if cur and cur.task["id"] in (r["control"].get("cancel") or []):
                 print(f"[worker] canceling {cur.task['id']}", flush=True)
@@ -440,7 +466,7 @@ def main():
     rep.add_argument("--fail-reason", default=None)
     sub.add_parser("stop", help="stop the running worker for this agent (kills its driver too)")
     args = ap.parse_args()
-    cfg = load_cfg()
+    cfg = load_cfg_min() if args.cmd in ("report", "stop") else load_cfg()
     if args.cmd == "report":
         loopback_post(cfg, "/report", {"task_id": args.task_id, "status": args.status,
                                        "output": args.output, "question": args.question,

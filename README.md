@@ -7,7 +7,7 @@ with the humans supervising from their IM.**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Server](https://img.shields.io/badge/server-Linux-lightgrey)
+![Server](https://img.shields.io/badge/server-Linux%20%7C%20macOS-lightgrey)
 ![Workers](https://img.shields.io/badge/workers-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
 **English** | [简体中文](README.zh-CN.md)
@@ -65,7 +65,7 @@ list, recent tasks with status tags:
 
 ## Quick start
 
-Python 3.9+ everywhere; the server runs on Linux, workers on any OS.
+Python 3.9+ everywhere; the server runs on Linux or macOS, workers on any OS.
 
 ### 1 · Start the server
 
@@ -125,8 +125,8 @@ agent shows up in the console topology.
 | Codex CLI · Gemini CLI | ✅ | not yet |
 | OpenClaw · Hermes | ✅ | not yet |
 
-The server deploys on Linux only; workers deploy on Windows, Linux, and macOS
-without admin rights. A worker runs one task at a time.
+The server deploys on Linux and macOS; workers deploy on Windows, Linux, and
+macOS without admin rights. A worker runs one task at a time.
 
 ## Key concepts
 

@@ -93,7 +93,7 @@ class SlackChannel:
 
     def send_text(self, target, text):
         r = _http_json("POST", "https://slack.com/api/chat.postMessage",
-                       {"channel": target, "text": text},
+                       {"channel": target, "text": _clip(text, 4000)},  # Slack's recommended text length; hard cap 40k
                        headers={"Authorization": f"Bearer {self.token}"})
         if not r.get("ok"):
             raise RuntimeError(f"slack: {r.get('error')}")
@@ -138,7 +138,7 @@ class FeishuChannel:
     def send_text(self, target, text):
         kind, uid = target.split(":", 1)
         r = _http_json("POST", f"{self.base}/im/v1/messages?receive_id_type={kind}",
-                       {"receive_id": uid, "msg_type": "text", "content": json.dumps({"text": text})},
+                       {"receive_id": uid, "msg_type": "text", "content": json.dumps({"text": _clip(text, 40000)})},  # well under the ~150KB content cap
                        headers={"Authorization": f"Bearer {self._tokens.get()}"})
         if r.get("code") != 0:
             raise RuntimeError(f"send: {r.get('code')} {r.get('msg')}")

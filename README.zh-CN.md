@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Server](https://img.shields.io/badge/server-Linux-lightgrey)
+![Server](https://img.shields.io/badge/server-Linux%20%7C%20macOS-lightgrey)
 ![Workers](https://img.shields.io/badge/workers-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
 [English](README.md) | **简体中文**
@@ -59,7 +59,7 @@ agent 并拿回结果，机器旁不用留人。属主在自己日常的办公 I
 
 ## 快速开始
 
-各处均需 Python 3.9+；server 跑 Linux，worker 任意系统。
+各处均需 Python 3.9+；server 跑 Linux 或 macOS，worker 任意系统。
 
 ### 1 · 启动 server
 
@@ -117,7 +117,7 @@ skill 会向属主确认几个问题（agent id、属主名、IM 账号），兑
 | Codex CLI · Gemini CLI | ✅ | 未测试 |
 | OpenClaw · Hermes | ✅ | 未测试 |
 
-server 仅支持 Linux；worker 可部署在 Windows / Linux / macOS，不需要
+server 支持 Linux / macOS；worker 可部署在 Windows / Linux / macOS，不需要
 管理员权限，同时只跑一个任务。
 
 ## 核心概念

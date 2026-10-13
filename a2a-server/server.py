@@ -38,7 +38,7 @@ if not _cfg_path.exists():
     raise SystemExit(f"config not found: {_cfg_path} (copy server.example.yaml to server.yaml)")
 CFG = env_expand({**DEFAULTS, **yaml.safe_load(_cfg_path.read_text())})
 for _k, _dflt in DEFAULTS.items():  # numeric knobs: a "90s" string silently kills the sweeper
-    if isinstance(_dflt, (int, float)) and not isinstance(_dflt, bool):
+    if isinstance(_dflt, (int, float)):
         _v = CFG[_k]
         if not isinstance(_v, (int, float)) or _v <= 0:
             raise SystemExit(f"config error: {_k} must be a positive number, got {_v!r}")
@@ -187,9 +187,12 @@ def drop_waiter(domain, agent_id):
 def owner_binding(domain, username):
     """The binding notifications actually go through: default channel first, else any.
     Single source of truth — directory health must reflect the real send path."""
-    return (q1("SELECT * FROM owner_bindings WHERE domain_id=? AND username=? AND channel=?",
-               (domain, username, domain_channel(domain)))
-            or q1("SELECT * FROM owner_bindings WHERE domain_id=? AND username=? LIMIT 1", (domain, username)))
+    b = (q1("SELECT * FROM owner_bindings WHERE domain_id=? AND username=? AND channel=?",
+            (domain, username, domain_channel(domain)))
+         or q1("SELECT * FROM owner_bindings WHERE domain_id=? AND username=? LIMIT 1", (domain, username)))
+    # a binding on a channel removed from the config can neither send nor claim
+    # health: report it as missing so the directory shows the truth
+    return b if b and b["channel"] in notify.CHANNELS else None
 
 
 async def send_to_owner(domain, username, key, task_id=None, ctx=None):
@@ -472,7 +475,7 @@ async def create_task_core(d, initiator, target_id, text, timeout=None, files=No
     target = require_agent(d, target_id)
     if not isinstance(text, str) or not text.strip():
         raise ApiErr(400, "text must be a non-empty string")
-    if timeout is not None and not (isinstance(timeout, int) and timeout > 0):
+    if timeout is not None and not (isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0):
         raise ApiErr(400, "timeout must be a positive int")
     tid, ts = uuid.uuid4().hex, now()
     nt = {"id": tid, "domain_id": d, "initiator": initiator, "target": target_id}  # notify_task shape
@@ -623,8 +626,7 @@ async def owner_action(d, tid, req: Request):
     if action == "reject":
         if task["status"] != "pending-approval":
             raise ApiErr(409, "not pending-approval")
-        if not await fail_task(task, "rejected"):
-            raise ApiErr(409, "not pending-approval")
+        await fail_task(task, "rejected")  # guarded UPDATE fires: no yield since the status read
         return {"status": "failed"}
     if action == "abort":
         return {"status": await cancel_core(task, "canceled_by_owner")}
@@ -655,7 +657,7 @@ async def poll(d, aid, req: Request):
         if row and row["lease_id"] and row["lease_id"] == t.get("lease_id"):
             exp = t.get("expected_seconds")  # client value: must be a positive int or nothing (sweep does math on it)
             x("UPDATE tasks SET status='working', started_at=?, expected_seconds=? WHERE id=? AND status='dispatched'",
-              (now(), exp if isinstance(exp, int) and exp > 0 else None, t["task_id"]))
+              (now(), exp if isinstance(exp, int) and not isinstance(exp, bool) and exp > 0 else None, t["task_id"]))
             emit(t["task_id"], d, "state_change", {"to": "working"})
     for t in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status IN ('dispatched','working')", (d, aid)):
         orphan = t["id"] not in {s["task_id"] for s in seen}
@@ -746,23 +748,25 @@ async def results(d, aid, req: Request):
         convo = json.loads(task["convo"])
         convo.append({"from": aid, "text": out_text, "at": now(),
                       **({"files": fmeta} if fmeta else {})})  # result + deliverables readable via task detail
-        if x("UPDATE tasks SET status='completed', convo=?, finished_at=? WHERE id=? AND status IN ('dispatched','working')",
-             (json.dumps(convo, ensure_ascii=False), now(), task["id"])) == 0:
-            raise ApiErr(409, "task no longer running")
+        # no rowcount check: the status was verified above with no await since,
+        # so the guarded WHERE can only match (same discipline as the IR branch)
+        x("UPDATE tasks SET status='completed', convo=?, finished_at=? WHERE id=? AND status IN ('dispatched','working')",
+          (json.dumps(convo, ensure_ascii=False), now(), task["id"]))
         emit(task["id"], d, "state_change", {"to": "completed"})
         await notify_task(task, "task_completed", output_head=out_text[:400])
     elif status == "failed":
         reason = b.get("fail_reason")  # client value: keep only a usable string
         await fail_task(task, reason if isinstance(reason, str) and reason else "driver_error", output_head=out_text)
     elif status == "input-required":
+        question = str(b.get("question") or "")  # client value: same coercion as output, it reaches convo + IM text
         convo = json.loads(task["convo"])
-        convo.append({"from": aid, "text": b.get("question", ""), "at": now(),
+        convo.append({"from": aid, "text": question, "at": now(),
                       **({"files": fmeta} if fmeta else {})})
         x("UPDATE tasks SET status='input-required', ir_at=?, convo=? WHERE id=? AND status IN ('dispatched','working')",
           (now(), json.dumps(convo, ensure_ascii=False), task["id"]))
         DB.commit()
         emit(task["id"], d, "state_change", {"to": "input-required"})
-        await notify_task(task, "input_required", to="initiator", question=b.get("question", ""))
+        await notify_task(task, "input_required", to="initiator", question=question)
     else:
         raise ApiErr(400, "bad status")
     wake(d, aid)
@@ -857,6 +861,8 @@ async def sweep():
                 # the notify above awaits: a worker that re-registered in that window
                 # keeps its fresh row (remove_agent is session-guarded)
                 remove_agent(a)
+                DB.commit()  # before the file/task cleanup below: a failure there must
+                # roll back only that cleanup, never resurrect this agent (and re-notify)
             for f in q("SELECT id, domain_id FROM files WHERE created_at < ?", (t - CFG["task_retention"],)):
                 (FILE_DIR / f["domain_id"] / f["id"]).unlink(missing_ok=True)
             x("DELETE FROM files WHERE created_at < ?", (t - CFG["task_retention"],))
@@ -961,7 +967,7 @@ if __name__ == "__main__":
         if CFG.get(_name) and _name not in notify.CHANNELS:
             print(f"[server] WARNING: {_name} config incomplete; channel disabled "
                   f"(complete the credentials or drop the section)", flush=True)
-    if not CFG["public_base"]:
-        print("[server] WARNING: public_base is empty; links in notification texts "
-              "will be relative — set it in server.yaml", flush=True)
+    if not CFG["public_base"] or any(s in CFG["public_base"] for s in ("127.0.0.1", "localhost")):
+        print("[server] WARNING: public_base is empty or loopback; links in notification "
+              "texts will not open on other machines — set the server's LAN address", flush=True)
     uvicorn.run(app, host=CFG["host"], port=int(CFG["port"]), log_level="warning")

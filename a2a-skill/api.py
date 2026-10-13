@@ -23,10 +23,14 @@ def load():
     # worker.yaml lives next to this file (monorepo), or where the skill
     # installed the worker; $A2A_WORKER_CONFIG always wins
     env_cfg = os.environ.get("A2A_WORKER_CONFIG", "").strip()
-    cands = ([Path(env_cfg)] if env_cfg else []) + \
-        [Path(__file__).parent / "worker.yaml", Path(__file__).parent.parent / "a2a-worker" / "worker.yaml",
-         Path.home() / "a2a-cowork" / "a2a-worker" / "worker.yaml"]
-    p = next((c for c in cands if c.is_file()), None)
+    if env_cfg:
+        p = Path(env_cfg)
+        if not p.is_file():
+            sys.exit(f"$A2A_WORKER_CONFIG is set to {p}, which does not exist")
+    else:
+        cands = [Path(__file__).parent / "worker.yaml", Path(__file__).parent.parent / "a2a-worker" / "worker.yaml",
+                 Path.home() / "a2a-cowork" / "a2a-worker" / "worker.yaml"]
+        p = next((c for c in cands if c.is_file()), None)
     if not p:
         sys.exit("no worker.yaml found (looked in $A2A_WORKER_CONFIG, here, ../a2a-worker, "
                  "and ~/a2a-cowork/a2a-worker); run onboarding per SKILL.md first")
@@ -52,9 +56,14 @@ def call(cfg, method, path, body=None, raw=False, data=None, timeout=60):
     req.add_header("authorization", f"Bearer {cfg['domain_token']}")
     if agent := cfg.get("agent", {}).get("id"):
         req.add_header("x-agent-id", agent)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        got = r.read()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            got = r.read()
         return (got, r.headers) if raw else (json.loads(got) if got else {})
+    except urllib.error.HTTPError:
+        raise  # the caller maps HTTP errors to their message
+    except OSError as e:  # read-side timeout/reset urllib didn't wrap as URLError
+        raise urllib.error.URLError(str(e)) from e
 
 
 def upload_file(cfg, path):

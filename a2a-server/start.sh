@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-key start for Linux: stops any previous instance, then runs the server
+# One-key start for Linux/macOS: stops any previous instance, then runs the server
 # in the background with the new pid recorded in a2a.pid. Usage: ./start.sh [stop]
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -31,9 +31,14 @@ if [ ! -d .venv ]; then
 fi
 nohup .venv/bin/python server.py >"$LOG" 2>&1 &
 echo $! >"$PID_FILE"
-sleep 1
+# A doomed boot must die BEFORE we report success: a busy port or a bad config
+# kills uvicorn right after its ~1-2s import — a 1s check once saw it still alive.
+sleep 3
 if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   echo "server running (pid $(cat "$PID_FILE"), log $LOG)"
 else
-  echo "server failed to start; last lines of $LOG:"; tail -5 "$LOG"; rm -f "$PID_FILE"; exit 1
+  echo "server failed to start (port busy, or a boot error); last lines of $LOG:"
+  tail -5 "$LOG"
+  rm -f "$PID_FILE"
+  exit 1
 fi

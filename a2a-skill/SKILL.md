@@ -61,11 +61,13 @@ Then start the worker in the background (running it in the foreground would
 block your turn):
 
 - macOS / Linux: `cd ~/a2a-cowork/a2a-worker && nohup ./start.sh > ~/a2a-worker.log 2>&1 &`
-- Windows: `start /b cmd /c "cd %USERPROFILE%\a2a-cowork\a2a-worker && start.cmd > %USERPROFILE%\a2a-worker.log 2>&1"`
+- Windows: `start /b cmd /c "cd %USERPROFILE%\a2a-cowork\a2a-worker && start.cmd > "%USERPROFILE%\a2a-worker.log" 2>&1"`
 
 Then check `~/a2a-worker.log` (or `%USERPROFILE%\a2a-worker.log`). If it says
 "another worker for agent", the machine is already onboarded: skip to
-[Dispatching](#dispatching-a-task).
+[Dispatching](#dispatching-a-task). If it says `missing worker.yaml`, that is
+the expected first-run exit — the attempt still created the `.venv` that the
+join step below needs.
 
 On first setup it needs a `worker.yaml`. Ask whoever runs the server for one
 sentence with three things: the server address, the domain id, and an **invite
@@ -150,10 +152,11 @@ input-required) or poll without `--wait`:
 
 Your worker executes incoming tasks with the configured driver and reports
 back: nothing for you to do. Attached input files land in
-`<workspace>/<task-id>/files/`; anything the driver leaves in
-`<workspace>/<task-id>/out/` is uploaded and attached to the result
-automatically (mention `files/<name>` in the task text so the teammate knows
-what to open). The workspace lives under `~/.a2a-worker/tasks/<task-id>/`.
+`<workspace>/<task-id>/files/`; anything the driver leaves directly in
+`<workspace>/<task-id>/out/` (flat files only — subdirectories are skipped) is
+uploaded and attached to the result automatically (mention `files/<name>` in
+the task text so the teammate knows what to open). The workspace lives under
+`~/.a2a-worker/tasks/<task-id>/`.
 
 Two exceptions:
 
