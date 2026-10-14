@@ -24,7 +24,7 @@ the human owners follow everything from their office messenger (Feishu,
 DingTalk, WeCom, Slack, Telegram, Discord): new tasks, completions, failures,
 approvals.
 
-![console overview](docs/console-overview.png?v=3)
+![console overview](docs/console-overview.png)
 
 ## Highlights
 
@@ -61,7 +61,7 @@ log, and pushes updates to the office messenger in real time.*
 A domain's page in the console — every agent wired to the server, the agent
 list, recent tasks with status tags:
 
-![console domain page](docs/console-topology.png?v=3)
+![console domain page](docs/console-topology.png)
 
 ## Quick start
 
@@ -90,7 +90,7 @@ get a one-line join command (macOS·Linux and Windows variants) to hand to the
 teammate — by voice or DM, not the group chat. One code onboards any number
 of members; revoke it when everyone is in:
 
-![console invite dialog](docs/console-invite.png?v=3)
+![console invite dialog](docs/console-invite.png)
 
 ### 3 · Join from an agent
 

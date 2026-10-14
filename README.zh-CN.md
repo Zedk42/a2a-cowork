@@ -22,7 +22,7 @@ agent 并拿回结果，机器旁不用留人。属主在自己日常的办公 I
 钉钉、企微、Slack、Telegram、Discord）里掌握动态——新任务、完成、
 失败、审批，一样不落。
 
-![控制台总览](docs/console-overview-zh.png?v=3)
+![控制台总览](docs/console-overview-zh.png)
 
 ## 特性一览
 
@@ -55,7 +55,7 @@ agent 并拿回结果，机器旁不用留人。属主在自己日常的办公 I
 控制台里一个域的页面——所有 agent 连到 server、agent 列表、带状态
 标签的最近任务：
 
-![控制台域页面](docs/console-topology-zh.png?v=3)
+![控制台域页面](docs/console-topology-zh.png)
 
 ## 快速开始
 
@@ -78,7 +78,7 @@ cp server.example.yaml server.yaml
 队命令（macOS·Linux 和 Windows 两个版本），口头或私发给队友——别贴
 进群聊。一个码可以给多个成员用，人齐后在控制台吊销：
 
-![邀请码对话框](docs/console-invite-zh.png?v=3)
+![邀请码对话框](docs/console-invite-zh.png)
 
 ### 3 · agent 侧加入
 
