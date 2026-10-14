@@ -1,4 +1,4 @@
-import asyncio, hashlib, json, os, re, secrets, time, uuid
+import asyncio, hashlib, json, os, re, secrets, signal, time, uuid
 from pathlib import Path
 
 import yaml
@@ -11,11 +11,8 @@ from admin_page import ADMIN_HTML
 from db import INFLIGHT, connect
 
 # Concurrency contract: everything runs on ONE asyncio event loop with SYNCHRONOUS
-# sqlite calls. The read-modify-write sequences in emit()/deliver() rely on no
-# `await` appearing inside a DB section — adding one there silently breaks
-# atomicity. Keep DB sections await-free. Notification sends are blocking IM
-# HTTP calls and therefore always run in a thread (asyncio.to_thread), AFTER the
-# commit of the state transition they describe.
+# sqlite calls. Keep DB read-modify-write sections await-free. Notification sends
+# run in a worker thread (asyncio.to_thread) AFTER committing the state transition.
 
 DEFAULTS = {
     "host": "0.0.0.0", "port": 8100, "language": "zh", "db_path": "a2a.db",
@@ -30,17 +27,20 @@ def env_expand(v):
         return {k: env_expand(x) for k, x in v.items()}
     if isinstance(v, list):
         return [env_expand(x) for x in v]
-    return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), v) if isinstance(v, str) else v
+    return re.sub(r"\$\{(\w+)(?::-([^}]*))?\}", lambda m: os.environ.get(m.group(1)) or m.group(2) or "", v) if isinstance(v, str) else v
 
 
 _cfg_path = Path(os.environ.get("A2A_SERVER_CONFIG", Path(__file__).parent / "server.yaml"))
 if not _cfg_path.exists():
     raise SystemExit(f"config not found: {_cfg_path} (copy server.example.yaml to server.yaml)")
-CFG = env_expand({**DEFAULTS, **yaml.safe_load(_cfg_path.read_text())})
-for _k, _dflt in DEFAULTS.items():  # numeric knobs: a "90s" string silently kills the sweeper
+_raw_cfg = yaml.safe_load(_cfg_path.read_text()) or {}
+if not isinstance(_raw_cfg, dict):
+    raise SystemExit(f"config error: {_cfg_path} must be a YAML mapping")
+CFG = env_expand({**DEFAULTS, **_raw_cfg})
+for _k, _dflt in DEFAULTS.items():
     if isinstance(_dflt, (int, float)):
         _v = CFG[_k]
-        if not isinstance(_v, (int, float)) or _v <= 0:
+        if isinstance(_v, bool) or not isinstance(_v, (int, float)) or _v <= 0:
             raise SystemExit(f"config error: {_k} must be a positive number, got {_v!r}")
 if CFG["poll_wait"] >= 60:
     raise SystemExit("config error: poll_wait must be < 60 — the worker's HTTP client gives up at 65s; "
@@ -51,37 +51,50 @@ if CFG["online_timeout"] <= CFG["poll_wait"] + CFG["sweep_interval"]:
 if not isinstance(CFG.get("domains"), list) or not CFG["domains"]:
     raise SystemExit("config error: domains must be a non-empty list")
 for _d in CFG["domains"]:
-    if not _d.get("id") or not _d.get("token"):
+    if not isinstance(_d, dict) or not _d.get("id") or not _d.get("token"):
         raise SystemExit(f"config error: every domain needs id and token, got {_d!r} "
                          "(an unset ${ENV_VAR} expands to empty)")
 
-# IM adapters register only when their credentials are complete; the rest stay
-# unavailable (register answers 400 channel_unavailable)
 notify.CHANNELS.update(im_channels.build(CFG))
 DOMAINS = {dm["id"]: dm for dm in CFG["domains"]}
-for _dm in CFG["domains"]:  # one IM per domain; that channel must actually exist
+for _dm in CFG["domains"]:
     _ch = _dm.get("channel") or CFG["default_channel"]
     if _ch not in notify.CHANNELS:
         raise SystemExit(f"config error: channel {_ch!r} of domain {_dm['id']!r} is not available "
                          f"(configured: {', '.join(notify.CHANNELS)})")
 if CFG["language"] not in notify.MESSAGES:
     raise SystemExit(f"config error: language {CFG['language']!r} not in catalog {list(notify.MESSAGES)}")
-CFG["public_base"] = str(CFG["public_base"] or "").rstrip("/")  # no doubled slash in notify links
+CFG["public_base"] = str(CFG["public_base"] or "").rstrip("/")
 notify.set_lang(CFG["language"])
 DB = connect(CFG["db_path"])
-FILE_DIR = Path(CFG["db_path"]).parent / "files"  # staged transfer files; disk name is the uuid only
+FILE_DIR = Path(CFG["db_path"]).parent / "files"
 WAITERS = {}  # (domain, agent_id) -> asyncio.Event, woken when work appears
-DEREGISTERED = {}  # (domain, agent_id) -> expiry: short tombstone so a live
-# worker's next poll gets 410 and exits instead of silently re-registering
+DEREGISTERED = {}  # (domain, agent_id) -> expiry tombstone (410)
+STOPPING = False
 
 from contextlib import asynccontextmanager
 
 
 @asynccontextmanager
 async def lifespan(_app):
+    global STOPPING
+    STOPPING = False
+    def _stop():
+        global STOPPING
+        STOPPING = True
+        for ev in WAITERS.values():
+            ev.set()
+    prev = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    for sig, old in prev.items():
+        signal.signal(sig, lambda s, f, _old=old: (_stop(), _old(s, f) if callable(_old) else None))
     task = asyncio.create_task(sweep())
-    yield
-    task.cancel()
+    try:
+        yield
+    finally:
+        _stop()
+        task.cancel()
+        for sig, old in prev.items():
+            signal.signal(sig, old)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -179,13 +192,8 @@ def emit(task_id, domain, etype, payload):
 
 
 def wake(domain, agent_id):
-    ev = WAITERS.get((domain, agent_id))
-    if ev:
+    if ev := WAITERS.pop((domain, agent_id), None):
         ev.set()
-
-
-def drop_waiter(domain, agent_id):
-    WAITERS.pop((domain, agent_id), None)
 
 
 # ---------- notifications ----------
@@ -231,32 +239,32 @@ async def notify_task(task, key, to="both", **ctx):
             await send_to_owner(d, a["o"], key, task["id"], kv)
 
 
-async def fail_task(task, reason, to="both", output_head=None):
+async def fail_task(task, reason, to="both", output_head=None, files=None):
     # guarded: a task already in a terminal state can never be re-failed (no revival, no double notify)
     if x("UPDATE tasks SET status='failed', fail_reason=?, finished_at=? WHERE id=? AND status NOT IN ('completed','failed','canceled')",
          (reason, now(), task["id"])) == 0:
         return False
     emit(task["id"], task["domain_id"], "state_change", {"to": "failed", "reason": reason,
-                                                         **({"output": output_head[:2000]} if output_head else {})})
+                                                         **({"output": output_head[:2000]} if output_head else {}),
+                                                         **({"files": files} if files else {})})
     await notify_task(task, "task_failed", to=to, reason=notify.reason_desc(reason))
     wake(task["domain_id"], task["target"])
     return True
 
 
 def _safe_name(name):
-    name = re.sub(r"[\\/:\x00-\x1f]", "_", str(name)).strip() or "file"
-    return name[:200]
+    name = re.sub(r"[\\/:\x00-\x1f]", "_", str(name)).strip()
+    return "file" if name in ("", ".", "..") else name[:200]
 
 
 def file_meta(f):
     return {"id": f["id"], "name": f["name"], "size": f["size"], "sha256": f["sha256"]}
 
 
-def _claim_files(d, ids, task_id, enforce_cap=True):
+def _claim_files(d, ids, task_id, kind="in", enforce_cap=True):
     """Attach uploaded files to a task: domain + existence checked, one task per
-    file; enforce_cap applies the per-task count cap (dispatch attachments only —
-    follow-up and result paths bypass it). Returns the meta that travels in the
-    message payloads."""
+    file; kind distinguishes initiator/followup inputs ('in') from worker
+    deliverables ('out')."""
     if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
         raise ApiErr(400, "files must be a list of file ids")
     uniq = list(dict.fromkeys(ids))
@@ -269,11 +277,11 @@ def _claim_files(d, ids, task_id, enforce_cap=True):
             raise ApiErr(409, f"file {fid[:8]} already attached to another task")
         metas.append(file_meta(f))
     if enforce_cap:
-        have = q1("SELECT COUNT(*) c FROM files WHERE domain_id=? AND task_id=?", (d, task_id))["c"]
+        have = q1("SELECT COUNT(*) c FROM files WHERE domain_id=? AND task_id=? AND kind='in'", (d, task_id))["c"]
         if have + len(uniq) > CFG["max_files_per_task"]:
             raise ApiErr(400, f"too many files on one task (max {CFG['max_files_per_task']})")
     for fid in uniq:
-        x("UPDATE files SET task_id=? WHERE id=?", (task_id, fid))
+        x("UPDATE files SET task_id=?, kind=? WHERE id=?", (task_id, kind, fid))
     return metas
 
 
@@ -315,7 +323,7 @@ def remove_agent(a):
         return False
     if not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (a["domain_id"], a["owner_username"])):
         x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (a["domain_id"], a["owner_username"]))
-    drop_waiter(a["domain_id"], a["agent_id"])
+    WAITERS.pop((a["domain_id"], a["agent_id"]), None)
     return True
 
 
@@ -349,9 +357,10 @@ def check_registration(d, b):
     if af != "all" and not (isinstance(af, list) and all(isinstance(i, str) for i in af)):
         raise ApiErr(400, "accept_from must be 'all' or a list of agent ids")
     nb = b["notify"] if isinstance(b["notify"], dict) else {}
-    if not nb.get("channel") or not isinstance(nb.get("id"), str) or not nb["id"] \
-            or not isinstance(nb.get("id_type"), str) or not nb["id_type"]:
-        raise ApiErr(400, "notify must have channel, id_type and id")  # scalars only: they reach SQL
+    id_type = nb.get("id_type") or "auto"
+    if not nb.get("channel") or not isinstance(nb.get("id"), str) or not nb["id"].strip() \
+            or not isinstance(id_type, str):
+        raise ApiErr(400, "notify must have channel, id_type and id")
     if b.get("driver_kind", "command") not in ("command", "manual"):
         raise ApiErr(400, "driver_kind must be command | manual")
     if not isinstance(b.get("description", ""), str):
@@ -367,7 +376,8 @@ async def register_core(d, b, fresh=False):
     binding, write agent + binding, emit. fresh=True (join): re-check the id
     AFTER the IM awaits — that window is the takeover race."""
     check_registration(d, b)
-    af, nb = b.get("accept_from", "all"), b["notify"]
+    af = b.get("accept_from", "all")
+    nb = {**b["notify"], "id": b["notify"]["id"].strip(), "id_type": b["notify"].get("id_type") or "auto"}
     ch = notify.CHANNELS[nb["channel"]]
     why = ""
     try:  # both must succeed BEFORE any binding is written — a transient IM
@@ -380,8 +390,6 @@ async def register_core(d, b, fresh=False):
         uid, verified, why = "", 0, str(e)
         print(f"[notify] register {b['agent_id']}: {e}", flush=True)
     ts = now()
-    # the poller's identity: client-declared per process when present (workers
-    # since per-poller sessions), server-generated otherwise (legacy semantics)
     sess = declared_session(b) or uuid.uuid4().hex
     prev = q1("SELECT owner_username o FROM agents WHERE domain_id=? AND agent_id=?", (d, b["agent_id"]))
     if fresh:
@@ -406,12 +414,9 @@ async def register_core(d, b, fresh=False):
             not q1("SELECT 1 FROM agents WHERE domain_id=? AND owner_username=?", (d, prev["o"])):
         x("DELETE FROM owner_bindings WHERE domain_id=? AND username=?", (d, prev["o"]))
     DB.commit()
-    # emit exactly one event: notify_failed on a broken binding, register_verify otherwise
+    wake(d, b["agent_id"])  # wake any suspended long-poll from a superseded session so it exits 204
     emit(f"reg:{b['agent_id']}", d, "notify_failed" if not verified else "register_verify",
          {"notify_verified": bool(verified), "why": why})
-    # a fresh registrant supersedes any prior process of this agent: leases held
-    # by another session are dead by definition. This register-time kill is the
-    # fast path for real restarts; polls of a non-holding session never adjudicate.
     for t in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status IN ('dispatched','working') "
                "AND lease_session IS NOT NULL AND lease_session != ?", (d, b["agent_id"], sess)):
         await fail_task(t, "worker_restart")
@@ -434,11 +439,8 @@ async def join(d, req: Request):
     code = b.get("code")
     if not isinstance(code, str) or not code:
         raise ApiErr(400, "missing code")
-    # gate specific answers behind the code: a wrong code must not probe
-    # which ids exist, are disabled, or which channel the domain runs
     if not q1("SELECT 1 FROM invites WHERE code=? AND domain_id=?", (code, d)):
         raise ApiErr(403, "invite invalid or revoked")
-    # join is for NEW members — existing ones add agents via /register
     check_registration(d, b)
     guard_new(d, b)
     r = await register_core(d, b, fresh=True)
@@ -448,18 +450,16 @@ async def join(d, req: Request):
 
 async def deregister_core(d, aid):
     """Shared by the deregister endpoint (owner-initiated) and operator kick:
-    fail in-flight, say goodbye, remove the row (session-guarded), tombstone."""
+    tombstone immediately, fail in-flight, say goodbye, remove the row (session-guarded)."""
     a = require_agent(d, aid)
+    DEREGISTERED[(d, aid)] = now() + 180
+    wake(d, aid)
     for t in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status NOT IN ('completed','failed','canceled')", (d, aid)):
         await fail_task(t, "agent_deregistered", to="initiator")
     await send_to_owner(d, a["owner_username"], "agent_deregistered", task_id=f"reg:{aid}",
                         ctx={"agent": aid})  # BEFORE deleting the binding, or the goodbye can never be delivered
-    # the send above awaits, so a re-register may have landed meanwhile (deregister
-    # → restart with new config): only OUR session's row may die, the fresh one survives
     if remove_agent(a):
         DB.commit()
-        # the tombstone must outlive any real poll gap: an idle long-poll (up to 65s) or
-        # one 60s outbox upload plus a busy interval — 60s was outrunnable, resurrecting the agent
         DEREGISTERED[(d, aid)] = now() + 180
 
 
@@ -475,7 +475,7 @@ async def list_agents(d, req: Request):
     domain_of(req, d)
     out = []
     for a in q("SELECT * FROM agents WHERE domain_id=?", (d,)):
-        b = owner_binding(d, a["owner_username"])  # same lookup the send path uses
+        b = owner_binding(d, a["owner_username"])
         out.append({"agent_id": a["agent_id"], "owner_username": a["owner_username"], "description": a["description"],
                     "accept_policy": a["accept_policy"], "driver_kind": a["driver_kind"],
                     "online": online(a, now()),
@@ -492,8 +492,8 @@ async def create_task_core(d, initiator, target_id, text, timeout=None, files=No
     if timeout is not None and not (isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0):
         raise ApiErr(400, "timeout must be a positive int")
     tid, ts = uuid.uuid4().hex, now()
-    nt = {"id": tid, "domain_id": d, "initiator": initiator, "target": target_id}  # notify_task shape
-    fmeta = _claim_files(d, files or [], tid)
+    nt = {"id": tid, "domain_id": d, "initiator": initiator, "target": target_id}
+    fmeta = _claim_files(d, files or [], tid, kind="in", enforce_cap=True)
     timeout = timeout or CFG["default_task_timeout"]
     convo = json.dumps([{"from": initiator, "text": text, "at": ts, **({"files": fmeta} if fmeta else {})}],
                        ensure_ascii=False)
@@ -529,7 +529,6 @@ async def create_task_core(d, initiator, target_id, text, timeout=None, files=No
 def followup_core(d, task, text, fmeta=None):
     convo = json.loads(task["convo"])
     convo.append({"from": task["initiator"], "text": text, "at": now(), **({"files": fmeta} if fmeta else {})})
-    # guarded: only the first follow-up wins; a racing second one sees 0 rows and 409s
     if x("UPDATE tasks SET status='available', available_at=?, convo=?, ir_at=NULL WHERE id=? AND status='input-required'",
          (now(), json.dumps(convo, ensure_ascii=False), task["id"])) == 0:
         raise ApiErr(409, "task not input-required")
@@ -576,7 +575,7 @@ async def list_tasks(d, req: Request, status=None, role=None):
         if role not in ("initiator", "target"):
             raise ApiErr(400, "bad role")
         if not me:
-            raise ApiErr(403, "missing X-Agent-Id")  # otherwise the role filter silently matches nothing
+            raise ApiErr(403, "missing X-Agent-Id")
         sql += f" AND {role}=?"
         args.append(me)
     return [task_json(t) for t in q(sql + " ORDER BY created_at DESC LIMIT 100", args)]
@@ -593,7 +592,7 @@ async def cancel_task(d, tid, req: Request):
     domain_of(req, d)
     task = require_task(d, tid)
     if req.headers.get("x-agent-id") != task["initiator"]:
-        raise ApiErr(403, "not initiator")  # owners abort via /action
+        raise ApiErr(403, "not initiator")
     return {"status": await cancel_core(task, "canceled_by_initiator")}
 
 
@@ -606,18 +605,14 @@ async def followup(d, tid, req: Request):
         raise ApiErr(403, "not initiator")
     if not isinstance(b.get("text"), str) or not b["text"].strip():
         raise ApiErr(400, "text must be a non-empty string")
-    # no count cap: the executor asked for these files; blocking the answer would
-    # deadlock a task whose result files already fill the cap
-    fmeta = _claim_files(d, b.get("files") or [], tid, enforce_cap=False)
-    followup_core(d, task, b["text"], fmeta)  # guarded UPDATE; races surface as 409 from the core
+    fmeta = _claim_files(d, b.get("files") or [], tid, kind="in", enforce_cap=False)
+    followup_core(d, task, b["text"], fmeta)
     return {"status": "available"}
 
 
 @app.post("/domains/{d}/tasks/{tid}/action")
 async def owner_action(d, tid, req: Request):
-    """Owner entry point (approve/reject/abort). IM card callbacks will forward
-    here too; until interactive cards land, the owner calls this from any of
-    their own agents."""
+    """Owner entry point (approve/reject/abort)."""
     domain_of(req, d)
     body = await json_body(req)
     task = require_task(d, tid)
@@ -631,7 +626,7 @@ async def owner_action(d, tid, req: Request):
     action = body.get("action")
     if action == "approve":
         if x("UPDATE tasks SET status='available', available_at=? WHERE id=? AND status='pending-approval'",
-             (now(), tid)) == 0:  # approval expired between read and write -> no revival
+             (now(), tid)) == 0:
             raise ApiErr(409, "not pending-approval")
         DB.commit()
         emit(tid, d, "state_change", {"to": "available", "via": "approve"})
@@ -640,7 +635,7 @@ async def owner_action(d, tid, req: Request):
     if action == "reject":
         if task["status"] != "pending-approval":
             raise ApiErr(409, "not pending-approval")
-        await fail_task(task, "rejected")  # guarded UPDATE fires: no yield since the status read
+        await fail_task(task, "rejected")
         return {"status": "failed"}
     if action == "abort":
         return {"status": await cancel_core(task, "canceled_by_owner")}
@@ -654,19 +649,18 @@ async def poll(d, aid, req: Request):
     domain_of(req, d)
     b = await json_body(req)
     if (exp := DEREGISTERED.get((d, aid), 0)) and now() < exp:
-        raise ApiErr(410, "deregistered")  # every poll inside the window gets 410, not just the first
+        raise ApiErr(410, "deregistered")
     agent = require_agent(d, aid)
-    poller = declared_session(b) or agent["session"]
-    if poller != agent["session"]:
+    reg_session = agent["session"]
+    poller = declared_session(b) or reg_session
+    if poller != reg_session:
         p8 = poller[:8]
         if not q1("SELECT 1 FROM task_events WHERE domain_id=? AND task_id=? AND type='dual_poller' "
                   "AND payload LIKE ?", (d, f"reg:{aid}", f'%"{p8}"%')):
-            # audit trail only: a poller this registration does not know about —
-            # one event per offender, kept until retention
             emit(f"reg:{aid}", d, "dual_poller", {"poller": p8})
     st = b.get("exec_state") if isinstance(b.get("exec_state"), dict) else {"tasks": []}
     seen = [t for t in st.get("tasks", []) if isinstance(t, dict)
-            and isinstance(t.get("task_id"), str) and t.get("task_id")]  # str guard: a non-str must not reach the SQL binding
+            and isinstance(t.get("task_id"), str) and t.get("task_id")]
 
     x("UPDATE agents SET last_seen_at=? WHERE domain_id=? AND agent_id=?", (now(), d, aid))
     DB.commit()
@@ -676,40 +670,26 @@ async def poll(d, aid, req: Request):
         row = q1("SELECT lease_id FROM tasks WHERE domain_id=? AND id=? AND target=? AND status='dispatched'",
                  (d, t["task_id"], aid))
         if row and row["lease_id"] and row["lease_id"] == t.get("lease_id"):
-            exp = t.get("expected_seconds")  # client value: must be a positive int or nothing (sweep does math on it)
+            exp = t.get("expected_seconds")
             x("UPDATE tasks SET status='working', started_at=?, expected_seconds=? WHERE id=? AND status='dispatched'",
               (now(), exp if isinstance(exp, int) and not isinstance(exp, bool) and exp > 0 else None, t["task_id"]))
             emit(t["task_id"], d, "state_change", {"to": "working"})
     for t in q("SELECT * FROM tasks WHERE domain_id=? AND target=? AND status IN ('dispatched','working')", (d, aid)):
-        # only the lease-HOLDING poller adjudicates: its own task leaving its
-        # exec_state for longer than the grace dies as worker_restart. A poller
-        # that does not hold the lease (a second process sharing this id) must
-        # never kill it — dead holders are reaped by the sweep (receive_timeout,
-        # timeout_stale) and by the supersede-on-register rule
         if t["id"] not in {s["task_id"] for s in seen} and t["lease_session"] == poller \
                 and now() - t["dispatched_at"] > CFG["dispatch_grace"]:
             await fail_task(t, "worker_restart")
 
     async def deliver():
-        # re-read inside deliver: the second call runs AFTER the long-poll await, during
-        # which the agent may have re-registered (fresh session) or been deleted.
-        # Leasing under the CURRENT row session hands the task to the registered
-        # process: its own grace adjudication then self-heals a delivery stolen
-        # by a poller that was superseded mid-suspend (its dead socket swallows it).
+        if STOPPING:
+            return None
         a = q1("SELECT session, driver_kind FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
-        if not a:
-            return None  # deregistered while we were suspended
+        if not a or a["session"] != reg_session:
+            return None  # deregistered or re-registered while this poll was suspended
         seen_ids = {s["task_id"] for s in seen}
-        # control.cancel for ANY terminal task still sitting in the worker's
-        # exec_state (canceled by owner OR failed by server-side timeouts):
-        # the worker kills its driver, drops the result, clears the slot
         cancels = [t["id"] for t in q("SELECT id FROM tasks WHERE domain_id=? AND target=? AND status IN ('canceled','failed')", (d, aid))
                    if t["id"] in seen_ids]
         if cancels:
             return {"control": {"cancel": cancels}}
-        # busy = the worker is actually running something (dispatched/working).
-        # input-required does NOT block delivery: the driver already finished there,
-        # the agent is idle waiting for the initiator's follow-up.
         if q1("SELECT 1 FROM tasks WHERE domain_id=? AND target=? AND status IN ('dispatched','working') LIMIT 1", (d, aid)):
             return None
         row = q1("SELECT id FROM tasks WHERE domain_id=? AND target=? AND status='available' ORDER BY COALESCE(available_at, created_at) LIMIT 1", (d, aid))
@@ -722,28 +702,25 @@ async def poll(d, aid, req: Request):
         DB.commit()
         emit(row["id"], d, "state_change", {"to": "dispatched"})
         t = q1("SELECT * FROM tasks WHERE id=?", (row["id"],))
-        if a["driver_kind"] == "manual":  # the worker runs every task with its one configured driver
+        if a["driver_kind"] == "manual":
             await notify_task(t, "manual_dispatch", to="target", summary=t["text"][:200])
-        fs = q("SELECT * FROM files WHERE domain_id=? AND task_id=? ORDER BY created_at", (d, row["id"]))
+        fs = q("SELECT * FROM files WHERE domain_id=? AND task_id=? AND kind='in' ORDER BY created_at", (d, row["id"]))
         return {"task": {"id": t["id"], "lease_id": lease, "text": t["text"], "initiator": t["initiator"],
                          "timeout_seconds": t["timeout_seconds"], "convo": json.loads(t["convo"]),
                          "files": [file_meta(f) for f in fs]}}
 
     if (r := await deliver()) is not None:
         return r
-    if not b.get("block", True):
+    if not b.get("block", True) or STOPPING:
         return Response(status_code=204)
-    ev = WAITERS.setdefault((d, aid), asyncio.Event())
-    ev.clear()
+    wake(d, aid)
+    ev = WAITERS[(d, aid)] = asyncio.Event()
     try:
         await asyncio.wait_for(ev.wait(), timeout=CFG["poll_wait"])
     except asyncio.TimeoutError:
-        pass
-    # NOTE: a suspended poller whose process died can still claim here (writing
-    # to a dead socket). We cannot detect that after the body was consumed
-    # (request.is_disconnected blocks). deliver() leases under the CURRENT
-    # agents.session, so the orphan is recovered by the grace-window restart
-    # detection (or receive_timeout at 2×grace).
+        return Response(status_code=204)
+    if await req.is_disconnected():
+        return Response(status_code=204)
     return (r := await deliver()) or Response(status_code=204)
 
 
@@ -759,31 +736,28 @@ async def results(d, aid, req: Request):
     if lease_ok and task["status"] == b.get("status") and not (
             task["status"] == "failed" and b.get("fail_reason") != task["fail_reason"]):
         return {"accepted": True, "duplicate": True}  # retry after a lost response: already applied
-    # (a failed task re-reported with a DIFFERENT reason falls through to late_result)
     if not (lease_ok and task["status"] in ("dispatched", "working")):
         if task and not q1("SELECT 1 FROM task_events WHERE domain_id=? AND task_id=? AND type='late_result'", (d, task["id"])):
             emit(task["id"], d, "late_result", {"from_agent": aid})
             await notify_task(task, "late_result")
         return {"accepted": False, "reason": "late_result"}
     status = b.get("status")
-    out_text = str(b.get("output") or "")  # never let a non-str poison slicing downstream
-    # no cap here: a task whose inputs fill the cap must still be reportable
-    fmeta = _claim_files(d, b.get("files") or [], task["id"], enforce_cap=False)
+    out_text = str(b.get("output") or "")
+    fmeta = _claim_files(d, b.get("files") or [], task["id"], kind="out", enforce_cap=False)
     if status == "completed":
         convo = json.loads(task["convo"])
         convo.append({"from": aid, "text": out_text, "at": now(),
-                      **({"files": fmeta} if fmeta else {})})  # result + deliverables readable via task detail
-        # no rowcount check: the status was verified above with no await since,
-        # so the guarded WHERE can only match (same discipline as the IR branch)
+                      **({"files": fmeta} if fmeta else {})})
         x("UPDATE tasks SET status='completed', convo=?, finished_at=? WHERE id=? AND status IN ('dispatched','working')",
           (json.dumps(convo, ensure_ascii=False), now(), task["id"]))
         emit(task["id"], d, "state_change", {"to": "completed"})
         await notify_task(task, "task_completed", output_head=out_text[:400])
     elif status == "failed":
-        reason = b.get("fail_reason")  # client value: keep only a usable string
-        await fail_task(task, reason if isinstance(reason, str) and reason else "driver_error", output_head=out_text)
+        reason = b.get("fail_reason")
+        await fail_task(task, reason if isinstance(reason, str) and reason else "driver_error",
+                        output_head=out_text, files=fmeta)
     elif status == "input-required":
-        question = str(b.get("question") or "")  # client value: same coercion as output, it reaches convo + IM text
+        question = str(b.get("question") or "")
         convo = json.loads(task["convo"])
         convo.append({"from": aid, "text": question, "at": now(),
                       **({"files": fmeta} if fmeta else {})})
@@ -831,17 +805,20 @@ async def upload_file(d, req: Request, name=""):
     return {"id": fid, "name": name, "size": len(buf), "sha256": sha}
 
 
-@app.get("/domains/{d}/files/{fid}")
-async def download_file(d, fid, req: Request):
-    domain_of(req, d)
-    f = q1("SELECT * FROM files WHERE domain_id=? AND id=?", (d, fid))
+def _send_file(f):
     if not f:
         raise ApiErr(404, "no file")
-    path = FILE_DIR / d / fid
+    path = FILE_DIR / f["domain_id"] / f["id"]
     if not path.exists():
         raise ApiErr(404, "file data expired")
     return FileResponse(path, media_type="application/octet-stream", filename=f["name"],
                         headers={"X-File-SHA256": f["sha256"]})  # size rides on Content-Length
+
+
+@app.get("/domains/{d}/files/{fid}")
+async def download_file(d, fid, req: Request):
+    domain_of(req, d)
+    return _send_file(q1("SELECT * FROM files WHERE domain_id=? AND id=?", (d, fid)))
 
 
 # ---------- sweeper ----------
@@ -888,11 +865,11 @@ async def sweep():
                 remove_agent(a)
                 DB.commit()  # before the file/task cleanup below: a failure there must
                 # roll back only that cleanup, never resurrect this agent (and re-notify)
-            for f in q("SELECT id, domain_id FROM files WHERE created_at < ?", (t - CFG["task_retention"],)):
+            cutoff = t - CFG["task_retention"]
+            DB.execute("DELETE FROM tasks WHERE finished_at IS NOT NULL AND finished_at < ?", (cutoff,))
+            for f in q("DELETE FROM files WHERE created_at < ? AND (task_id IS NULL OR task_id NOT IN (SELECT id FROM tasks)) RETURNING id, domain_id", (cutoff,)):
                 (FILE_DIR / f["domain_id"] / f["id"]).unlink(missing_ok=True)
-            x("DELETE FROM files WHERE created_at < ?", (t - CFG["task_retention"],))
-            DB.execute("DELETE FROM tasks WHERE finished_at IS NOT NULL AND finished_at < ?", (t - CFG["task_retention"],))
-            DB.execute("DELETE FROM task_events WHERE created_at < ?", (t - CFG["task_retention"],))
+            DB.execute("DELETE FROM task_events WHERE created_at < ? AND task_id NOT IN (SELECT id FROM tasks)", (cutoff,))
             DB.commit()
         except Exception as e:
             DB.rollback()
@@ -903,7 +880,6 @@ async def sweep():
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin():
-    # unauthenticated by design: trusted LAN, task texts are member-visible
     return ADMIN_HTML
 
 
@@ -912,31 +888,32 @@ async def admin_data():
     t = now()
     agents = []
     for a in q("SELECT * FROM agents ORDER BY domain_id, agent_id"):
-        b = owner_binding(a["domain_id"], a["owner_username"])  # same lookup the send path uses
+        b = owner_binding(a["domain_id"], a["owner_username"])
         agents.append({"domain": a["domain_id"], "agent_id": a["agent_id"], "owner": a["owner_username"],
                        "description": a["description"], "accept_policy": a["accept_policy"],
                        "driver_kind": a["driver_kind"],
                        "online": online(a, t),
                        "notify_verified": bool(b and b["verified"])})
-    tasks = [{"id": k["id"], "domain": k["domain_id"], "initiator": k["initiator"], "target": k["target"],
-              "status": k["status"], "fail_reason": k["fail_reason"], "created_at": iso(k["created_at"]),
-              "finished_at": iso(k["finished_at"]) if k["finished_at"] else None}
-             for k in q("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 100")]
-    domains = []
+    tasks, domains = [], []
     for dm in CFG["domains"]:
         did = dm["id"]
+        tasks.extend({"id": k["id"], "domain": k["domain_id"], "initiator": k["initiator"], "target": k["target"],
+                      "status": k["status"], "fail_reason": k["fail_reason"], "created_at": iso(k["created_at"]),
+                      "finished_at": iso(k["finished_at"]) if k["finished_at"] else None}
+                     for k in q("SELECT * FROM tasks WHERE domain_id=? ORDER BY created_at DESC LIMIT 100", (did,)))
         ags = [a for a in agents if a["domain"] == did]
         last = q1("SELECT MAX(created_at) m FROM task_events WHERE domain_id=?", (did,))["m"]
         domains.append({"id": did, "channel": dm.get("channel") or CFG["default_channel"],
                         "agents": len(ags), "online": sum(1 for a in ags if a["online"]),
                         "inflight": q1("SELECT COUNT(*) c FROM tasks WHERE domain_id=? AND status IN (?,?,?)",
                                        (did, *INFLIGHT))["c"],
-                        "last_event": iso(last) if last else None})  # iso(None) would stamp "now"
+                        "last_event": iso(last) if last else None})
     invites = [{"code": i["code"], "domain": i["domain_id"], "note": i["note"]}
-                for i in q("SELECT * FROM invites ORDER BY created_at DESC")]
+               for i in q("SELECT * FROM invites ORDER BY created_at DESC")]
     disabled = [{"domain": b["domain_id"], "agent_id": b["agent_id"]}
                 for b in q("SELECT domain_id, agent_id FROM disabled_agents ORDER BY agent_id")]
-    return {"agents": agents, "tasks": tasks, "domains": domains, "invites": invites, "disabled": disabled}
+    return {"public_base": CFG["public_base"], "agents": agents, "tasks": tasks,
+            "domains": domains, "invites": invites, "disabled": disabled}
 
 
 @app.post("/admin/op")
@@ -984,6 +961,11 @@ async def admin_task(tid):
     if not task:
         raise ApiErr(404, "no task")
     return task_json(task, convo=True)  # full convo + events: the interaction record for debugging
+
+
+@app.get("/admin/file/{fid}")
+async def admin_file(fid):
+    return _send_file(q1("SELECT * FROM files WHERE id=?", (fid,)))
 
 
 if __name__ == "__main__":

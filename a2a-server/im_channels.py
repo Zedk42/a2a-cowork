@@ -21,7 +21,7 @@ TIMEOUT = 5  # a stuck IM call must not hold a notify thread (or a register) lon
 def _http_json(method, url, body=None, headers=None):
     req = urllib.request.Request(url, method=method,
                                  data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Content-Type": "application/json", **(headers or {})})
+                                 headers={"Content-Type": "application/json", "User-Agent": "a2a-cowork/1.0", **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             return json.loads(r.read() or b"{}")
@@ -80,11 +80,13 @@ class SlackChannel:
         self.token = token
 
     def normalize(self, binding):
-        if binding["id_type"] == "member_id":
-            return str(binding["id"]).strip()
-        if binding["id_type"] == "email":
-            r = _http_json("GET", "https://slack.com/api/users.lookupByEmail?email="
-                           + urllib.parse.quote(str(binding["id"]).strip()),
+        t, v = binding.get("id_type") or "auto", str(binding["id"]).strip()
+        if t in ("auto", "text"):
+            t = "email" if "@" in v else "member_id"
+        if t == "member_id":
+            return v
+        if t == "email":
+            r = _http_json("GET", "https://slack.com/api/users.lookupByEmail?email=" + urllib.parse.quote(v),
                            headers={"Authorization": f"Bearer {self.token}"})
             if not r.get("ok"):
                 raise RuntimeError(f"email lookup: {r.get('error')}")
@@ -93,7 +95,7 @@ class SlackChannel:
 
     def send_text(self, target, text):
         r = _http_json("POST", "https://slack.com/api/chat.postMessage",
-                       {"channel": target, "text": _clip(text, 4000)},  # Slack's recommended text length; hard cap 40k
+                       {"channel": target, "text": _clip(text, 4000)},
                        headers={"Authorization": f"Bearer {self.token}"})
         if not r.get("ok"):
             raise RuntimeError(f"slack: {r.get('error')}")
@@ -117,7 +119,6 @@ class FeishuChannel:
         self._tokens = _TokenClient(fetch)
 
     def _lookup(self, email):
-        # batch_get_id answers user_list[].user_id, typed by user_id_type (default open_id)
         r = _http_json("POST", f"{self.base}/contact/v3/users/batch_get_id?user_id_type=open_id",
                        {"emails": [email]},
                        headers={"Authorization": f"Bearer {self._tokens.get()}"})
@@ -128,7 +129,9 @@ class FeishuChannel:
         return uid
 
     def normalize(self, binding):
-        t, v = binding["id_type"], str(binding["id"]).strip()
+        t, v = binding.get("id_type") or "auto", str(binding["id"]).strip()
+        if t in ("auto", "text"):
+            t = "email" if "@" in v else ("open_id" if v.startswith("ou_") else ("chat_id" if v.startswith("oc_") else t))
         if t in ("open_id", "chat_id"):
             return f"{t}:{v}"
         if t == "email":
@@ -138,16 +141,23 @@ class FeishuChannel:
     def send_text(self, target, text):
         kind, uid = target.split(":", 1)
         r = _http_json("POST", f"{self.base}/im/v1/messages?receive_id_type={kind}",
-                       {"receive_id": uid, "msg_type": "text", "content": json.dumps({"text": _clip(text, 40000)})},  # well under the ~150KB content cap
+                       {"receive_id": uid, "msg_type": "text", "content": json.dumps({"text": _clip(text, 40000)})},
                        headers={"Authorization": f"Bearer {self._tokens.get()}"})
         if r.get("code") != 0:
             raise RuntimeError(f"send: {r.get('code')} {r.get('msg')}")
 
 
+def _mobile_or_uid(binding):
+    t, v = binding.get("id_type") or "auto", str(binding["id"]).strip()
+    if t in ("auto", "text"):
+        t = "mobile" if v.lstrip("+").isdigit() else "userid"
+    if t not in ("mobile", "userid"):
+        raise ValueError("id_type must be mobile or userid")
+    return t, v
+
+
 class DingTalkChannel:
-    """企业内部应用工作通知 (appKey/appSecret/agentId). Lookup is by mobile — the
-    number must exist in the org directory (a >20% lookup error rate blocks the
-    API for a day, so owners must type it correctly)."""
+    """企业内部应用工作通知 (appKey/appSecret/agentId). Lookup is by mobile."""
     base = "https://oapi.dingtalk.com"
 
     def __init__(self, app_key, app_secret, agent_id):
@@ -163,16 +173,14 @@ class DingTalkChannel:
         self._tokens = _TokenClient(fetch)
 
     def normalize(self, binding):
-        t, v = binding["id_type"], str(binding["id"]).strip()
+        t, v = _mobile_or_uid(binding)
         if t == "userid":
             return v
-        if t == "mobile":
-            r = _http_json("POST", f"{self.base}/topapi/v2/user/getbymobile?access_token={self._tokens.get()}",
-                           {"mobile": v})
-            if r.get("errcode") != 0 or not (r.get("result") or {}).get("userid"):
-                raise RuntimeError(f"mobile lookup: {r.get('errmsg') or 'no userid'}")
-            return r["result"]["userid"]
-        raise ValueError("id_type must be mobile or userid")
+        r = _http_json("POST", f"{self.base}/topapi/v2/user/getbymobile?access_token={self._tokens.get()}",
+                       {"mobile": v})
+        if r.get("errcode") != 0 or not (r.get("result") or {}).get("userid"):
+            raise RuntimeError(f"mobile lookup: {r.get('errmsg') or 'no userid'}")
+        return r["result"]["userid"]
 
     def send_text(self, target, text):
         r = _http_json("POST", f"{self.base}/topapi/message/corpconversation/asyncsend_v2"
@@ -184,9 +192,7 @@ class DingTalkChannel:
 
 
 class WeComChannel:
-    """企业微信自建应用消息 (corpId/corpSecret/agentId). Text is capped at 2048
-    bytes by the platform; longer texts are byte-clipped. Recipients must be in
-    the app's visible range and the server's egress IP in its trusted-IP list."""
+    """企业微信自建应用消息 (corpId/corpSecret/agentId)."""
     base = "https://qyapi.weixin.qq.com/cgi-bin"
 
     def __init__(self, corp_id, corp_secret, agent_id):
@@ -202,16 +208,14 @@ class WeComChannel:
         self._tokens = _TokenClient(fetch)
 
     def normalize(self, binding):
-        t, v = binding["id_type"], str(binding["id"]).strip()
+        t, v = _mobile_or_uid(binding)
         if t == "userid":
             return v
-        if t == "mobile":
-            r = _http_json("POST", f"{self.base}/user/getuserid?access_token={self._tokens.get()}",
-                           {"mobile": v})
-            if r.get("errcode") != 0 or not r.get("userid"):
-                raise RuntimeError(f"mobile lookup: {r.get('errmsg') or 'no userid'}")
-            return r["userid"]
-        raise ValueError("id_type must be mobile or userid")
+        r = _http_json("POST", f"{self.base}/user/getuserid?access_token={self._tokens.get()}",
+                       {"mobile": v})
+        if r.get("errcode") != 0 or not r.get("userid"):
+            raise RuntimeError(f"mobile lookup: {r.get('errmsg') or 'no userid'}")
+        return r["userid"]
 
     def send_text(self, target, text):
         r = _http_json("POST", f"{self.base}/message/send?access_token={self._tokens.get()}",
@@ -222,9 +226,7 @@ class WeComChannel:
 
 
 class DiscordChannel:
-    """Bot-token DMs. The owner's id is their snowflake user id (Discord: settings
-    -> advanced -> developer mode -> copy user id). The DM channel is opened once
-    per recipient and cached; a rate-limit (429) surfaces as notify_failed."""
+    """Bot-token DMs. The owner's id is their snowflake user id."""
     base = "https://discord.com/api/v10"
 
     def __init__(self, token):

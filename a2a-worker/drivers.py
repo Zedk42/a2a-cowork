@@ -46,9 +46,10 @@ def _marker_hit(marker, output):
 
 def _last_json(raw):
     """The driver's result envelope: the whole output if it is one JSON object
-    (single-line or pretty-printed), else the LAST {...} line (stream output)."""
-    body = raw.strip()
-    for cand in [body, *(ln.strip() for ln in reversed(body.splitlines()))]:
+    (single-line or pretty-printed), else the LAST {...} block or line."""
+    cands = ([raw[m.start():].strip() for m in reversed(list(re.finditer(r"(?m)^\s*\{", raw)))]
+             + [ln.strip() for ln in reversed(raw.splitlines())])
+    for cand in cands:
         if cand.startswith("{"):
             try:
                 return json.loads(cand)
@@ -74,17 +75,25 @@ def _extract(mode, raw):
 
 
 def run_command(driver_cfg, task, ws, marker, cancel_event, expected):
-    # ws = the task's own directory (Runner._ws()); cwd for the driver, files/ and out/ relative to it
     os.makedirs(ws, exist_ok=True)
-    prompt = "\n".join(f"[{m['from']}] {m['text']}" for m in task["convo"])
+    cwd = os.path.abspath(os.path.expanduser(driver_cfg.get("cwd") or ws))
+    os.makedirs(cwd, exist_ok=True)
+    base_dir = "." if cwd == os.path.abspath(ws) else ws
+    fnames = ", ".join(f["name"] for f in (task.get("files") or []))
+    m_hint = marker.lstrip("^").rstrip(":") + ":"
+    ctx = (f"[A2A context: workspace={ws}"
+           + (f" | input files in {base_dir}/files/: {fnames}" if fnames else "")
+           + f" | write output files to {base_dir}/out/ | to ask a follow-up question, print `{m_hint} <question>` as the very last line]")
+    prompt = "\n".join(f"[{m['from']}] {m['text']}" for m in task["convo"]) + f"\n\n{ctx}\n"
     task_file = os.path.join(ws, "task.txt")
-    with open(task_file, "w", encoding="utf-8") as f:  # utf-8, never BOM
+    with open(task_file, "w", encoding="utf-8") as f:
         f.write(prompt)
-    cmd = driver_cfg["cmd"].replace("{task_file}", task_file)  # NOT .format(): cmd may contain literal {} (JSON args)
+    cmd = driver_cfg["cmd"].replace("{task_file}", task_file)
     try:
-        proc = subprocess.Popen(cmd, shell=True, cwd=ws, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-                                start_new_session=(os.name != "nt"))  # cwd=task dir: files/ and out/ are relative
+        proc = subprocess.Popen(cmd, shell=True, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                env={**os.environ, "A2A_TASK_DIR": ws},
+                                start_new_session=(os.name != "nt"))
     except OSError as e:
         return {**FAIL_DRIVER, "fail_reason": "driver_error", "output": f"spawn failed: {e}"}
 
@@ -95,19 +104,23 @@ def run_command(driver_cfg, task, ws, marker, cancel_event, expected):
         except (BrokenPipeError, OSError, ValueError):
             pass
 
-    out = []
+    out_tail, err_tail = collections.deque(), collections.deque()
 
-    def drain():  # bounded ~1MB tail of whole lines; one newline-less giant line still buffers whole
-        tail, size = collections.deque(), 0
-        for line in iter(proc.stdout.readline, ""):
-            tail.append(line)
-            size += len(line)
-            if size > 1_048_576:
-                size -= len(tail.popleft())
-        out.append("".join(tail))
+    def drain(pipe, tail):
+        size = 0
+        try:
+            for line in iter(pipe.readline, ""):
+                tail.append(line)
+                size += len(line)
+                if size > 1_048_576:
+                    size -= len(tail.popleft())
+        except (OSError, ValueError):
+            pass
 
-    t_out = threading.Thread(target=drain, daemon=True)
+    t_out = threading.Thread(target=drain, args=(proc.stdout, out_tail), daemon=True)
+    t_err = threading.Thread(target=drain, args=(proc.stderr, err_tail), daemon=True)
     t_out.start()
+    t_err.start()
     threading.Thread(target=feed_stdin, daemon=True).start()
 
     deadline = time.time() + expected
@@ -117,22 +130,24 @@ def run_command(driver_cfg, task, ws, marker, cancel_event, expected):
             _kill(proc)
             return {**FAIL_DRIVER, "fail_reason": "canceled_by_owner", "output": "driver killed on cancel"}
         if time.time() > deadline:
-            _kill(proc)
             timed_out = True
             break
-        time.sleep(0.2)
-    t_out.join(timeout=10)
+    _kill(proc)  # reap any lingering child processes in the process group
+    t_out.join(timeout=2)
+    t_err.join(timeout=2)
     rc = proc.returncode
-    body = (out[0] if out else "").strip()
+    out_body = "".join(out_tail).strip()
+    err_body = "".join(err_tail).strip()
+    combined = (f"{err_body}\n{out_body}".strip() if err_body and out_body else (out_body or err_body))
     if timed_out:
-        return {**FAIL_DRIVER, "fail_reason": "timeout", "output": body[-4000:]}
-    output, parse_err = _extract(driver_cfg.get("output"), body)
+        return {**FAIL_DRIVER, "fail_reason": "timeout", "output": combined[-4000:]}
+    mode = driver_cfg.get("output")
+    output, parse_err = _extract(mode, out_body if mode == "last_json" and out_body else combined)
     if rc != 0:
-        return {**FAIL_DRIVER, "fail_reason": "driver_error", "output": f"rc={rc} {output[:4000]}"}
+        return {**FAIL_DRIVER, "fail_reason": "driver_error", "output": f"rc={rc} {combined[:4000]}"}
     if parse_err or not output:
-        # rc=0 is NOT success: empty/unparseable output is the worst failure (silent fake success)
         return {**FAIL_DRIVER, "fail_reason": "driver_error",
-                "output": (parse_err or "empty output") + f" | raw tail: {body[-2000:]}"}
+                "output": (parse_err or "empty output") + f" | raw tail: {combined[-2000:]}"}
     if q := _marker_hit(marker, output):
         return {"status": "input-required", "question": q, "output": output}
     return {"status": "completed", "output": output}

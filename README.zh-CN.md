@@ -22,7 +22,7 @@ agent 并拿回结果，机器旁不用留人。属主在自己日常的办公 I
 钉钉、企微、Slack、Telegram、Discord）里掌握动态——新任务、完成、
 失败、审批，一样不落。
 
-![控制台总览](docs/console-overview-zh.png?v=2)
+![控制台总览](docs/console-overview-zh.png?v=3)
 
 ## 特性一览
 
@@ -55,7 +55,7 @@ agent 并拿回结果，机器旁不用留人。属主在自己日常的办公 I
 控制台里一个域的页面——所有 agent 连到 server、agent 列表、带状态
 标签的最近任务：
 
-![控制台域页面](docs/console-topology-zh.png?v=2)
+![控制台域页面](docs/console-topology-zh.png?v=3)
 
 ## 快速开始
 
@@ -67,13 +67,10 @@ agent 并拿回结果，机器旁不用留人。属主在自己日常的办公 I
 git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
 cd a2a-cowork/a2a-server
 cp server.example.yaml server.yaml
-export A2A_TOKEN_A=secret-a A2A_TOKEN_B=secret-b   # 示例的 ${ENV} 占位；也可直接在 server.yaml 里写明文 token
 ./start.sh
 ```
 
-`start.sh` 会先停掉旧实例，pid 记到 `a2a.pid`，日志落在
-`a2a-server.log`。浏览器打开 `http://<server 局域网 IP>:8100/admin`，
-示例的两个域就出来了。
+`server.example.yaml` 使用 `${A2A_TOKEN_A:-secret-a}` 默认值，复制后即可直接启动体验；正式接入局域网前请设置环境变量 `A2A_TOKEN_A` / `A2A_TOKEN_B` 或直接修改 `server.yaml`。`start.sh` 会先停掉旧实例，pid 记到 `a2a.pid`，日志落在 `a2a-server.log`。浏览器打开 `http://<server 局域网 IP>:8100/admin`，示例的两个域就出来了。
 
 ### 2 · 签发邀请码
 
@@ -81,7 +78,7 @@ export A2A_TOKEN_A=secret-a A2A_TOKEN_B=secret-b   # 示例的 ${ENV} 占位；�
 队命令（macOS·Linux 和 Windows 两个版本），口头或私发给队友——别贴
 进群聊。一个码可以给多个成员用，人齐后在控制台吊销：
 
-![邀请码对话框](docs/console-invite-zh.png?v=2)
+![邀请码对话框](docs/console-invite-zh.png?v=3)
 
 ### 3 · agent 侧加入
 
@@ -150,7 +147,7 @@ domains:
 # input_required_timeout、agent/task 保留期、max_file_mb、max_files_per_task、max_body_mb
 ```
 
-所有字符串值支持 `${ENV_VAR}` 展开。
+所有字符串值支持 `${ENV_VAR}` 与 `${ENV_VAR:-default}` 展开。
 
 `worker.yaml`（每台工作站——入队时自动生成，此处供参考）：
 
@@ -163,12 +160,13 @@ agent:
   owner: zhangsan
   accept_policy: notify_run      # auto | notify_run | manual
   accept_from: all               # all | [agent-id, ...]
-notify: { channel: feishu, id_type: text, id: zhangsan }
+notify: { channel: feishu, id: zhangsan@example.com }  # 省略 id_type 时自动推断
 driver:
-  kind: command                 # command（子进程）| manual
+  kind: command                  # command（子进程）| manual
   cmd: 'claude -p --output-format json --permission-mode acceptEdits'
+  # cwd: ~/work/my-repo          # 可选工作目录（缺省为每任务独立目录）
   timeout: 3600
-  output: last_json             # last_json（stdout 上的 JSON 信封）| tail（纯文本）
+  output: last_json              # last_json（stdout 上的 JSON 信封）| tail（纯文本）
 ```
 
 任务文本经 stdin 和任务文件投递给 driver，永远不进命令行参数。

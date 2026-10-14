@@ -24,7 +24,7 @@ the human owners follow everything from their office messenger (Feishu,
 DingTalk, WeCom, Slack, Telegram, Discord): new tasks, completions, failures,
 approvals.
 
-![console overview](docs/console-overview.png?v=2)
+![console overview](docs/console-overview.png?v=3)
 
 ## Highlights
 
@@ -61,7 +61,7 @@ log, and pushes updates to the office messenger in real time.*
 A domain's page in the console — every agent wired to the server, the agent
 list, recent tasks with status tags:
 
-![console domain page](docs/console-topology.png?v=2)
+![console domain page](docs/console-topology.png?v=3)
 
 ## Quick start
 
@@ -73,13 +73,15 @@ Python 3.9+ everywhere; the server runs on Linux or macOS, workers on any OS.
 git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git
 cd a2a-cowork/a2a-server
 cp server.example.yaml server.yaml
-export A2A_TOKEN_A=secret-a A2A_TOKEN_B=secret-b   # the example's ${ENV} tokens; or write literals into server.yaml
 ./start.sh
 ```
 
-`start.sh` stops a previous instance first, records the pid to `a2a.pid`, and
-logs to `a2a-server.log`. Open `http://<server-lan-ip>:8100/admin` — the two
-example domains greet you.
+`server.example.yaml` uses `${A2A_TOKEN_A:-secret-a}` defaults so it boots
+immediately for local trials; set `A2A_TOKEN_A` / `A2A_TOKEN_B` in the
+environment (or edit `server.yaml`) before exposing it on your LAN. `start.sh`
+stops any previous instance, records the pid to `a2a.pid`, and logs to
+`a2a-server.log`. Open `http://<server-lan-ip>:8100/admin` — the two example
+domains greet you.
 
 ### 2 · Mint an invite
 
@@ -88,7 +90,7 @@ get a one-line join command (macOS·Linux and Windows variants) to hand to the
 teammate — by voice or DM, not the group chat. One code onboards any number
 of members; revoke it when everyone is in:
 
-![console invite dialog](docs/console-invite.png?v=2)
+![console invite dialog](docs/console-invite.png?v=3)
 
 ### 3 · Join from an agent
 
@@ -158,7 +160,7 @@ domains:
 # input_required_timeout, agent/task retention, max_file_mb, max_files_per_task, max_body_mb
 ```
 
-All string values support `${ENV_VAR}` expansion.
+All string values support `${ENV_VAR}` and `${ENV_VAR:-default}` expansion.
 
 `worker.yaml` (per workstation — written by onboarding, shown for reference):
 
@@ -171,12 +173,13 @@ agent:
   owner: zhangsan
   accept_policy: notify_run      # auto | notify_run | manual
   accept_from: all               # all | [agent-id, ...]
-notify: { channel: feishu, id_type: text, id: zhangsan }
+notify: { channel: feishu, id: zhangsan@example.com }  # id_type auto-inferred when omitted
 driver:
-  kind: command                 # command (subprocess) | manual
+  kind: command                  # command (subprocess) | manual
   cmd: 'claude -p --output-format json --permission-mode acceptEdits'
+  # cwd: ~/work/my-repo          # optional working directory (defaults to per-task workspace)
   timeout: 3600
-  output: last_json             # last_json (JSON envelope on stdout) | tail (plain text)
+  output: last_json              # last_json (JSON envelope on stdout) | tail (plain text)
 ```
 
 The task text reaches the driver via stdin and a task file — never on the

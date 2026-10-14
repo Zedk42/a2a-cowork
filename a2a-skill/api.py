@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""CLI for A2A Co-Work (used by the a2a-team skill and humans); only
-dependency is pyyaml.
+"""CLI for A2A Co-Work (used by the a2a-team skill and humans).
 
 Reads connection info from worker.yaml next to this file (or A2A_WORKER_CONFIG).
 Commands: agents | new | get | list | cancel | msg | action | file | deregister | join
-(join is standalone: it redeems an invite code before any worker.yaml exists)
+(join is standalone and stdlib-only: it redeems an invite code before any worker.yaml exists)
 """
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -16,12 +16,19 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-import yaml
+
+def _expand(v):
+    if isinstance(v, str):
+        return re.sub(r"\$\{(\w+)(?::-([^}]*))?\}", lambda m: os.environ.get(m.group(1)) or m.group(2) or "", v)
+    if isinstance(v, dict):
+        return {k: _expand(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_expand(x) for x in v]
+    return v
 
 
 def load():
-    # worker.yaml lives next to this file (monorepo), or where the skill
-    # installed the worker; $A2A_WORKER_CONFIG always wins
+    import yaml  # lazy import: `join` runs before any venv/pyyaml exists
     env_cfg = os.environ.get("A2A_WORKER_CONFIG", "").strip()
     if env_cfg:
         p = Path(env_cfg)
@@ -34,15 +41,10 @@ def load():
     if not p:
         sys.exit("no worker.yaml found (looked in $A2A_WORKER_CONFIG, here, ../a2a-worker, "
                  "and ~/a2a-cowork/a2a-worker); run onboarding per SKILL.md first")
-    def expand(v):
-        if isinstance(v, str):
-            return os.path.expandvars(v)
-        if isinstance(v, dict):
-            return {k: expand(x) for k, x in v.items()}
-        if isinstance(v, list):
-            return [expand(x) for x in v]
-        return v
-    cfg = expand(yaml.safe_load(p.read_text()))
+    raw = yaml.safe_load(p.read_text()) or {}
+    if not isinstance(raw, dict):
+        sys.exit(f"worker.yaml error: {p} must be a YAML mapping")
+    cfg = _expand(raw)
     missing = [k for k in ("server_url", "domain", "domain_token") if not cfg.get(k)]
     if missing:
         sys.exit(f"worker.yaml missing keys: {', '.join(missing)} — is this the right config file?")
@@ -54,15 +56,15 @@ def call(cfg, method, path, body=None, raw=False, data=None, timeout=60):
     req = urllib.request.Request(cfg["server_url"] + path, method=method,
                                  data=data if raw else (json.dumps(body).encode() if body is not None else None))
     req.add_header("authorization", f"Bearer {cfg['domain_token']}")
-    if agent := cfg.get("agent", {}).get("id"):
+    if agent := (cfg.get("agent") or {}).get("id"):
         req.add_header("x-agent-id", agent)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             got = r.read()
         return (got, r.headers) if raw else (json.loads(got) if got else {})
     except urllib.error.HTTPError:
-        raise  # the caller maps HTTP errors to their message
-    except OSError as e:  # read-side timeout/reset urllib didn't wrap as URLError
+        raise
+    except OSError as e:
         raise urllib.error.URLError(str(e)) from e
 
 
@@ -76,10 +78,10 @@ def upload_file(cfg, path):
 
 def fetch_file(cfg, fid, out=None):
     data, headers = call(cfg, "GET", f"/domains/{cfg['domain']}/files/{fid}", raw=True, timeout=300)
-    name = headers.get_filename() or fid  # HTTPMessage: parses filename= and filename*= forms
-    with open(out or name, "wb") as f:
+    dest = out or (n if (n := os.path.basename(headers.get_filename() or "")) not in ("", ".", "..") else fid)
+    with open(dest, "wb") as f:
         f.write(data)
-    return out or name
+    return dest
 
 
 TERMINAL = ("completed", "failed", "canceled")
@@ -104,9 +106,8 @@ def main():
     p.add_argument("--server", required=True); p.add_argument("--domain", required=True); p.add_argument("--code", required=True)
     p.add_argument("--agent-id", required=True); p.add_argument("--owner", required=True)
     p.add_argument("--desc", default=""); p.add_argument("--policy", default="notify_run")
-    p.add_argument("--notify-channel", required=True); p.add_argument("--notify-id-type", required=True); p.add_argument("--notify-id", required=True)
+    p.add_argument("--notify-channel", required=True); p.add_argument("--notify-id-type", default="auto"); p.add_argument("--notify-id", required=True)
     a = ap.parse_args()
-    # join runs before any worker.yaml exists — the code IS the credential
     cfg = {"server_url": a.server.rstrip("/"), "domain_token": ""} if a.cmd == "join" else load()
     d = a.domain if a.cmd == "join" else cfg["domain"]
     try:
@@ -119,7 +120,7 @@ def main():
             for x in call(cfg, "GET", f"/domains/{d}/agents"):
                 print(f"{'●' if x['online'] else '○'} {x['agent_id']:<24} {x['accept_policy']:<10} {x['driver_kind']:<10} {x['description']}")
         elif a.cmd == "new":
-            ids = [upload_file(cfg, f)["id"] for f in (a.file or [])]  # upload_file returns parsed JSON
+            ids = [upload_file(cfg, f)["id"] for f in (a.file or [])]
             print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks",
                                   {"target": a.to, "text": a.text,
                                    **({"timeout_seconds": a.timeout} if a.timeout else {}),
@@ -128,7 +129,6 @@ def main():
             deadline = time.time() + a.wait
             while True:
                 r = call(cfg, "GET", f"/domains/{d}/tasks/{a.task}")
-                # input-required is actionable for the caller: return there too
                 if r["status"] in TERMINAL or r["status"] == "input-required" or time.time() >= deadline:
                     print(json.dumps(r, ensure_ascii=False, indent=1))
                     return
@@ -140,6 +140,7 @@ def main():
                 if a.role:
                     q += ("&" if q else "?") + f"role={a.role}"
                 out += call(cfg, "GET", f"/domains/{d}/tasks{q}")
+            out.sort(key=lambda x: x.get("created_at", ""), reverse=True)
             print(json.dumps(out, ensure_ascii=False, indent=1))
         elif a.cmd == "cancel":
             print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks/{a.task}/cancel", {}), ensure_ascii=False))

@@ -49,57 +49,58 @@ api.py deregister                                # leave the team (stop the work
 
 ## Onboarding (once per machine)
 
-If no worker is installed yet (neither `~/a2a-cowork/a2a-worker/worker.py`
-nor `../a2a-worker/worker.py` exists), clone the repository (shallow is fine):
-
-- macOS / Linux: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork`
-- Windows: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git %USERPROFILE%\a2a-cowork`
-  (no git installed? download the repository zip from the GitHub page and
-  extract it as `a2a-cowork` in your home directory)
-
-Then start the worker in the background (running it in the foreground would
-block your turn):
+If `worker.yaml` already exists in `~/a2a-cowork/a2a-worker` (or `../a2a-worker`),
+make sure the worker is running and skip to [Dispatching](#dispatching-a-task):
 
 - macOS / Linux: `cd ~/a2a-cowork/a2a-worker && nohup ./start.sh > ~/a2a-worker.log 2>&1 &`
 - Windows: `start /b cmd /c "cd %USERPROFILE%\a2a-cowork\a2a-worker && start.cmd > "%USERPROFILE%\a2a-worker.log" 2>&1"`
 
-Then check `~/a2a-worker.log` (or `%USERPROFILE%\a2a-worker.log`). If it says
-"another worker for agent", the machine is already onboarded: skip to
-[Dispatching](#dispatching-a-task). If it says `missing worker.yaml`, that is
-the expected first-run exit — the attempt still created the `.venv` that the
-join step below needs.
+Otherwise, clone the repository first if neither `~/a2a-cowork/a2a-worker/worker.py`
+nor `../a2a-worker/worker.py` exists:
 
-On first setup it needs a `worker.yaml`. Ask whoever runs the server for one
-sentence with three things: the server address, the domain id, and an **invite
-code** (they generate it in the admin console). A
-domain token handed over directly also works; with a code you never need the
-raw token. Then ask the owner, never guessing from the system (`whoami`
-output is not a username):
+- macOS / Linux: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork`
+- Windows: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git %USERPROFILE%\a2a-cowork`
+  (no git installed? download the repository zip from GitHub and extract it as
+  `a2a-cowork` in your home directory)
+
+Ask whoever runs the server for one sentence with three things: the server
+address, the domain id, and an **invite code** (or the full one-liner from the
+admin console). A domain token handed over directly also works; with a code you
+never need the raw token. Then ask the owner, never guessing from the system
+(`whoami` output is not a username):
 
 1. Agent id: suggest `{owner}-{tool}`, e.g. `zhangsan-claude`.
 2. Owner username for notifications.
 3. Which IM platform they use and their ID on it. The whole domain must be on
    the same platform: the server enforces it. Examples: Feishu email, Telegram
-   numeric chat id (open a chat with the bot and /start first), Slack email,
-   DingTalk or WeCom mobile number, Discord numeric user id. If joining
+   numeric chat id (open a chat with the bot and `/start` first), Slack email,
+   DingTalk or WeCom mobile number, Discord numeric user id. (`--notify-id-type`
+   is optional and inferred automatically from the ID format.) If joining
    answers `channel_unavailable`, the platform is not enabled on the server:
-   a domain runs one platform, set server-side, so tell the maintainer.
+   tell the maintainer.
 
 Confirm instead of asking cold: the accept policy defaults to `notify_run`
-(notify the owner at arrival, run immediately; alternatives: `auto`,
-`manual`), and the description follows `<what it does>; input: <what a task
-must contain>; output: <what comes back>` so dispatchers can route tasks.
+(notify the owner at arrival, run immediately; alternatives: `auto`, `manual`),
+and the description follows `<what it does>; input: <what a task must contain>;
+output: <what comes back>` so dispatchers can route tasks.
 
-With the answers, clone the repo as described above, then redeem the code —
-the response carries the `domain_token` for `worker.yaml`:
+Redeem the invite code (`api.py join` uses only the Python standard library, so
+system `python3` / `py -3` works before any `.venv` exists) — the response
+carries the `domain_token` for `worker.yaml`:
 
-- macOS / Linux: `cd ~/a2a-cowork/a2a-skill && ~/a2a-cowork/a2a-worker/.venv/bin/python api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id-type <t> --notify-id <id>`
-- Windows: `cd %USERPROFILE%\a2a-cowork\a2a-skill && %USERPROFILE%\a2a-cowork\a2a-worker\.venv\Scripts\python.exe api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id-type <t> --notify-id <id>`
+- macOS / Linux: `python3 api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id <id>`
+- Windows: `py -3 api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id <id>`
 
-Copy `worker.example.yaml` to `worker.yaml` inside the worker directory, fill
-in the agent/notify answers and the returned `domain_token`, point the
-`driver:` block at this tool (its `cmd` and `output` mode), and start as
-above. The worker re-registers with its driver details on startup. If it
+Copy `worker.example.yaml` to `worker.yaml` inside `~/a2a-cowork/a2a-worker`,
+fill in the agent/notify answers and the returned `domain_token`, point the
+`driver:` block at this tool (its `cmd`, `output` mode, and optional `cwd`),
+and start the worker in the background (`start.sh` / `start.cmd` creates `.venv`
+and installs `pyyaml` automatically on first run):
+
+- macOS / Linux: `cd ~/a2a-cowork/a2a-worker && nohup ./start.sh > ~/a2a-worker.log 2>&1 &`
+- Windows: `start /b cmd /c "cd %USERPROFILE%\a2a-cowork\a2a-worker && start.cmd > "%USERPROFILE%\a2a-worker.log" 2>&1"`
+
+The worker registers with its driver details on startup. If `~/a2a-worker.log`
 warns "notify channel not verified", have the owner re-check the ID and
 restart.
 

@@ -271,11 +271,13 @@ def server_checks():
     links = [e["payload"] for e in call("GET", f"/domains/team-a/tasks/{tid}")[1]["events"]
              if e["type"] == "notify"]
     check("whitelist/source_not_allowed", f.get("fail_reason") == "source_not_allowed" and "notify" in events(tid), f)
-    check("public_base/no-double-slash", links and all("//domains" not in p for p in links), links)
+    check("public_base/no-double-slash", links and all("//domains" not in p and "//admin" not in p for p in links), links)
 
     # ---------- file staging: meta in payloads, caps, retention ----------
     fu = upload("notes.txt", b"hello-file-42")
     check("files/upload-meta", fu["name"] == "notes.txt" and fu["size"] == 13 and len(fu["sha256"]) == 64, fu)
+    check("files/dotdot-sanitized", upload("..", b"d")["name"] == "file")
+    check("files/admin-download", urllib.request.urlopen(f"http://127.0.0.1:{PORT}/admin/file/{fu['id']}").read() == b"hello-file-42")
     try:
         upload("big.bin", b"x" * (1024 * 1024 + 1))  # cap is 1MB in this suite's config
         check("files/size-cap", False, "oversize accepted")
@@ -329,6 +331,7 @@ def server_checks():
                     {"text": "here", "files": [upload("extra.txt", b"e")["id"]]}, agent="boss")
     check("files/followup-over-cap", s_f == 200, (s_f, r_f))
     _, d = poll("w")
+    check("files/ir-deliver-inputs-only", "res2.txt" not in {f["name"] for f in d["task"]["files"]})
     report("w", tid, d["task"]["lease_id"], "completed", output="ok")
     # retention sweep removes db row + staged bytes
     gone = upload("gone.txt", b"bye")
@@ -600,6 +603,7 @@ class Worker:
 
     def __init__(self, agent, driver, home):
         self.agent, self.home, self.proc = agent, home, None
+        self.prev_session = (q1("SELECT session FROM agents WHERE agent_id=?", (agent,)) or {}).get("session")
         self.cfg = os.path.join(SCRATCH, f"{agent}.yaml")
         self.logname = os.path.join(SCRATCH, f"{agent}.log")
         open(self.cfg, "w").write(f"""
@@ -631,7 +635,6 @@ driver: {driver}
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         self._close_log()
-        time.sleep(3)  # > poll_wait: the server-side suspended poll must expire before reuse
 
     def kill(self):  # hard cleanup on abnormal exit
         if self.proc.poll() is None:
@@ -639,7 +642,9 @@ driver: {driver}
         self._close_log()
 
     def online(self):
-        return any(a["agent_id"] == self.agent and a["online"] for a in call("GET", "/domains/team-a/agents")[1])
+        row = q1("SELECT session FROM agents WHERE agent_id=?", (self.agent,))
+        return bool(row and row["session"] != self.prev_session
+                    and any(a["agent_id"] == self.agent and a["online"] for a in call("GET", "/domains/team-a/agents")[1]))
 
     def wait_online(self, timeout=25):
         end = time.time() + timeout
@@ -694,9 +699,9 @@ def worker_checks():
     check("worker/marker-mid-text-completes", det["status"] == "completed", det)
 
     # file roundtrip with a real worker: input materialized to files/, outbox uploaded back
-    # (two outbox files also exercise the one-upload-per-heartbeat-tick path)
+    # (two outbox files also exercise the one-upload-per-heartbeat-tick path, and 0-byte files are skipped)
     w.stop()
-    w = Worker("wk", "{kind: command, cmd: 'mkdir -p out && cp files/in.txt out/copied.txt && cp files/in.txt out/second.txt && cat files/in.txt', timeout: 60, output: tail}", home)
+    w = Worker("wk", "{kind: command, cmd: 'mkdir -p out && touch out/empty.txt && cp files/in.txt out/copied.txt && cp files/in.txt out/second.txt && cat files/in.txt', timeout: 60, output: tail}", home)
     w.wait_online()
     fid = upload("in.txt", b"roundtrip-payload-7")["id"]
     tid = call("POST", "/domains/team-a/tasks",
@@ -705,7 +710,7 @@ def worker_checks():
     names = {f["name"] for f in det.get("files", [])}
     rid = next((f["id"] for f in det.get("files", []) if f["name"] == "copied.txt"), None)
     check("worker/file-roundtrip", det["convo"][-1]["text"].strip() == "roundtrip-payload-7"
-          and {"copied.txt", "second.txt"} <= names, names)
+          and {"copied.txt", "second.txt"} <= names and "empty.txt" not in names, names)
     if rid:
         got, _ = fetch(rid)
         check("worker/outbox-download", got == b"roundtrip-payload-7", got[:30])
@@ -774,9 +779,9 @@ def worker_checks():
                    cwd=WRK, env={**os.environ, "HOME": home, "A2A_WORKER_CONFIG": w.cfg},
                    capture_output=True, text=True, timeout=20)
 
-    # last_json: a pretty-printed envelope is one JSON object, and a falsy result is a result
+    # last_json: a pretty-printed envelope is one JSON object (even with stderr warnings), and a falsy result is a result
     w.stop()
-    w = Worker("wk", '''{kind: command, cmd: "python3 -c 'import json; print(json.dumps({\\"result\\": \\"pretty-ok\\"}, indent=2))'", timeout: 60, output: last_json}''', home)
+    w = Worker("wk", '''{kind: command, cmd: "python3 -c 'import json, sys; sys.stderr.write(\\"warn\\\\n\\"); print(json.dumps({\\"result\\": \\"pretty-ok\\"}, indent=2))'", timeout: 60, output: last_json}''', home)
     w.wait_online()
     det = wait_status(new_task("wk", "pretty json"), "completed")
     check("worker/last-json-pretty-printed",

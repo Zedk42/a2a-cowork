@@ -29,9 +29,9 @@ default_channel: log
 
 domains:
   - id: team-a
-    token: ${A2A_TOKEN_A}
+    token: ${A2A_TOKEN_A:-secret-a}
   - id: team-b
-    token: ${A2A_TOKEN_B}
+    token: ${A2A_TOKEN_B:-secret-b}
     # channel: feishu            # overrides default_channel for this domain
 
 online_timeout: 90

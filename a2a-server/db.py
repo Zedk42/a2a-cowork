@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS files (
   id         TEXT PRIMARY KEY,
   domain_id  TEXT NOT NULL,
   task_id    TEXT,
+  kind       TEXT NOT NULL DEFAULT 'in',
   name       TEXT NOT NULL,
   size       INTEGER NOT NULL,
   sha256     TEXT NOT NULL,
@@ -87,5 +88,9 @@ def connect(path):
     conn.row_factory = sqlite3.Row
     conn.executescript("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
     conn.executescript(SCHEMA)
+    try:
+        conn.execute("ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'in'")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
