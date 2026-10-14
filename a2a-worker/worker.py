@@ -176,12 +176,9 @@ def loopback_post(cfg, path, payload):
     except urllib.error.HTTPError as e:
         print(e.read().decode() if hasattr(e, "read") else str(e))
         sys.exit(1)
-    except urllib.error.URLError as e:
-        if path == "/stop" and worker_lock(cfg).exists():
-            worker_lock(cfg).unlink(missing_ok=True)
-            print("removed stale lock (worker was not running)")
-            return
-        print(str(e))
+    except urllib.error.URLError as e:  # includes "not running" (refused): a stale lock is
+        print(str(e))  # left for acquire_lock to judge — deleting it here would also delete
+        sys.exit(1)    # the lock of a live-but-wedged worker, breaking the single instance
         sys.exit(1)
 
 
@@ -243,7 +240,6 @@ class Runner:
         self.reported = False
         self.drop = False
         self.uploaded = {}
-        self.outbox_done = False
         self.cancel_event = threading.Event()
         self.finished = threading.Event()
         self.driver_cfg = cfg.get("driver") or {}
@@ -272,18 +268,16 @@ class Runner:
                 fh.write(data)
 
     def collect_outbox(self):
-        """Upload non-empty driver-produced files from <ws>/out/, at most one per
-        call so the poll heartbeat stays active during multi-file uploads."""
-        if self.outbox_done:
-            return list(self.uploaded.values())
+        """Upload non-empty driver-produced files from <ws>/out/, one per call so
+        the poll heartbeat stays active during multi-file uploads. Returns the
+        staged ids once nothing is pending."""
         out = os.path.join(self._ws(), "out")
         pending = [nm for nm in (sorted(os.listdir(out)) if os.path.isdir(out) else [])
                    if nm not in self.uploaded and os.path.isfile(os.path.join(out, nm))
                    and os.path.getsize(os.path.join(out, nm)) > 0]
-        if not pending:
-            self.outbox_done = True
+        nm = pending[0] if pending else None
+        if nm is None:
             return list(self.uploaded.values())
-        nm = pending[0]
         fp = os.path.join(out, nm)
         with open(fp, "rb") as fh:
             s2, body = api(self.cfg, "POST",
@@ -292,7 +286,6 @@ class Runner:
         if s2 != 200:
             print(f"[worker] outbox upload {nm} -> HTTP {s2}", flush=True)
             if 400 <= s2 < 500:
-                self.outbox_done = True
                 raise RuntimeError(f"outbox upload rejected: HTTP {s2} for {nm}")
             return False
         try:
@@ -300,10 +293,7 @@ class Runner:
         except (ValueError, KeyError, TypeError):
             print(f"[worker] outbox upload {nm}: non-JSON response, retrying", flush=True)
             return False
-        if len(pending) > 1:
-            return True
-        self.outbox_done = True
-        return list(self.uploaded.values())
+        return True if len(pending) > 1 else list(self.uploaded.values())
 
     def _run(self):
         try:

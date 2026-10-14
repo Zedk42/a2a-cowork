@@ -1,6 +1,7 @@
 # A2A worker config. Copy to worker.yaml and edit.
-# Values support ${ENV_VAR} expansion. Ask the owner for agent.owner and the
-# notify section — never guess them from the system (whoami etc.).
+# Values support ${ENV_VAR} or ${ENV_VAR:-default} expansion (one level, no
+# nesting). Ask the owner for agent.owner and the notify section — never
+# guess them from the system (whoami etc.).
 server_url: http://127.0.0.1:8100
 domain: team-a
 domain_token: ${A2A_TOKEN_A:-secret-a}

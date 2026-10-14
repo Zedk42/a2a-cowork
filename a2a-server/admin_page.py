@@ -870,7 +870,7 @@ async function showTask(id) {
       p.append(b);
       return p;
     };
-    cols.append(pane(t("Conversation"), d.convo.map(m => [`[${m.at.slice(11, 19)}] ${m.from}: `, m.text])),
+    cols.append(pane(t("Conversation"), d.convo.map(m => [`[${m.at.slice(5, 19).replace("T", " ")}] ${m.from}: `, m.text])),
                 pane(t("Events"), d.events.map(e => [`#${e.seq} ${e.type} `, e.payload])));
     detail.append(cols);
     detail.scrollIntoView({block: "nearest", behavior: "smooth"});

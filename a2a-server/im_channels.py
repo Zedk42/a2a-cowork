@@ -157,7 +157,9 @@ def _mobile_or_uid(binding):
 
 
 class DingTalkChannel:
-    """企业内部应用工作通知 (appKey/appSecret/agentId). Lookup is by mobile."""
+    """企业内部应用工作通知 (appKey/appSecret/agentId). Lookup is by mobile —
+    a >20% lookup error rate blocks the API for a day, so owners must type it
+    correctly (the code cannot enforce this)."""
     base = "https://oapi.dingtalk.com"
 
     def __init__(self, app_key, app_secret, agent_id):

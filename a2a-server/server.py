@@ -239,14 +239,13 @@ async def notify_task(task, key, to="both", **ctx):
             await send_to_owner(d, a["o"], key, task["id"], kv)
 
 
-async def fail_task(task, reason, to="both", output_head=None, files=None):
+async def fail_task(task, reason, to="both", output_head=None):
     # guarded: a task already in a terminal state can never be re-failed (no revival, no double notify)
     if x("UPDATE tasks SET status='failed', fail_reason=?, finished_at=? WHERE id=? AND status NOT IN ('completed','failed','canceled')",
          (reason, now(), task["id"])) == 0:
         return False
     emit(task["id"], task["domain_id"], "state_change", {"to": "failed", "reason": reason,
-                                                         **({"output": output_head[:2000]} if output_head else {}),
-                                                         **({"files": files} if files else {})})
+                                                         **({"output": output_head[:2000]} if output_head else {})})
     await notify_task(task, "task_failed", to=to, reason=notify.reason_desc(reason))
     wake(task["domain_id"], task["target"])
     return True
@@ -360,7 +359,7 @@ def check_registration(d, b):
     id_type = nb.get("id_type") or "auto"
     if not nb.get("channel") or not isinstance(nb.get("id"), str) or not nb["id"].strip() \
             or not isinstance(id_type, str):
-        raise ApiErr(400, "notify must have channel, id_type and id")
+        raise ApiErr(400, "notify must have channel and id")
     if b.get("driver_kind", "command") not in ("command", "manual"):
         raise ApiErr(400, "driver_kind must be command | manual")
     if not isinstance(b.get("description", ""), str):
@@ -680,8 +679,10 @@ async def poll(d, aid, req: Request):
             await fail_task(t, "worker_restart")
 
     async def deliver():
-        if STOPPING:
-            return None
+        if STOPPING or (d, aid) in DEREGISTERED:
+            return None  # shutting down, or a kick/deregister is mid-flight: leasing into the
+            # dying worker would strand the task (its next poll 410s, and with the agent
+            # row gone no sweeper ever reaps the orphan)
         a = q1("SELECT session, driver_kind FROM agents WHERE domain_id=? AND agent_id=?", (d, aid))
         if not a or a["session"] != reg_session:
             return None  # deregistered or re-registered while this poll was suspended
@@ -755,7 +756,7 @@ async def results(d, aid, req: Request):
     elif status == "failed":
         reason = b.get("fail_reason")
         await fail_task(task, reason if isinstance(reason, str) and reason else "driver_error",
-                        output_head=out_text, files=fmeta)
+                        output_head=out_text)
     elif status == "input-required":
         question = str(b.get("question") or "")
         convo = json.loads(task["convo"])
@@ -867,9 +868,10 @@ async def sweep():
                 # roll back only that cleanup, never resurrect this agent (and re-notify)
             cutoff = t - CFG["task_retention"]
             DB.execute("DELETE FROM tasks WHERE finished_at IS NOT NULL AND finished_at < ?", (cutoff,))
-            for f in q("DELETE FROM files WHERE created_at < ? AND (task_id IS NULL OR task_id NOT IN (SELECT id FROM tasks)) RETURNING id, domain_id", (cutoff,)):
+            for f in q("SELECT id, domain_id FROM files WHERE created_at < ?", (cutoff,)):
                 (FILE_DIR / f["domain_id"] / f["id"]).unlink(missing_ok=True)
-            DB.execute("DELETE FROM task_events WHERE created_at < ? AND task_id NOT IN (SELECT id FROM tasks)", (cutoff,))
+            x("DELETE FROM files WHERE created_at < ?", (cutoff,))
+            DB.execute("DELETE FROM task_events WHERE created_at < ?", (cutoff,))
             DB.commit()
         except Exception as e:
             DB.rollback()

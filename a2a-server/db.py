@@ -90,7 +90,10 @@ def connect(path):
     conn.executescript(SCHEMA)
     try:
         conn.execute("ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'in'")
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as e:
+        # swallow only "already migrated"; a locked DB must fail loudly or every
+        # kind='in' query 500s later
+        if "duplicate column" not in str(e).lower():
+            raise
     conn.commit()
     return conn
