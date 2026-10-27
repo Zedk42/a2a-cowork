@@ -39,7 +39,8 @@ if not isinstance(_raw_cfg, dict):
 CFG = env_expand({**DEFAULTS, **_raw_cfg})
 for _k, _dflt in DEFAULTS.items():
     if isinstance(_dflt, (int, float)):
-        _v = CFG[_k]
+        try: _v = CFG[_k] = _dflt if (_v := CFG[_k]) == "" else (int(_v) if _v.isdigit() else float(_v)) if isinstance(_v, str) else _v
+        except ValueError: pass
         if isinstance(_v, bool) or not isinstance(_v, (int, float)) or _v <= 0:
             raise SystemExit(f"config error: {_k} must be a positive number, got {_v!r}")
 if CFG["poll_wait"] >= 60:
@@ -568,8 +569,9 @@ async def list_tasks(d, req: Request, status=None, role=None):
     me = req.headers.get("x-agent-id")
     sql, args = "SELECT * FROM tasks WHERE domain_id=?", [d]
     if status:
-        sql += " AND status=?"
-        args.append(status)
+        sts = status.split(",")
+        sql += f" AND status IN ({','.join('?' * len(sts))})"
+        args += sts
     if role:
         if role not in ("initiator", "target"):
             raise ApiErr(400, "bad role")
@@ -760,13 +762,13 @@ async def results(d, aid, req: Request):
     elif status == "input-required":
         question = str(b.get("question") or "")
         convo = json.loads(task["convo"])
-        convo.append({"from": aid, "text": question, "at": now(),
+        convo.append({"from": aid, "text": out_text or question, "at": now(),
                       **({"files": fmeta} if fmeta else {})})
         x("UPDATE tasks SET status='input-required', ir_at=?, convo=? WHERE id=? AND status IN ('dispatched','working')",
           (now(), json.dumps(convo, ensure_ascii=False), task["id"]))
         DB.commit()
         emit(task["id"], d, "state_change", {"to": "input-required"})
-        await notify_task(task, "input_required", to="initiator", question=question)
+        await notify_task(task, "input_required", to="initiator", question=question or out_text[:400])
     else:
         raise ApiErr(400, "bad status")
     wake(d, aid)
@@ -868,10 +870,11 @@ async def sweep():
                 # roll back only that cleanup, never resurrect this agent (and re-notify)
             cutoff = t - CFG["task_retention"]
             DB.execute("DELETE FROM tasks WHERE finished_at IS NOT NULL AND finished_at < ?", (cutoff,))
-            for f in q("SELECT id, domain_id FROM files WHERE created_at < ?", (cutoff,)):
+            orphan = "created_at < ? AND NOT EXISTS (SELECT 1 FROM tasks WHERE id = files.task_id)"
+            for f in q(f"SELECT id, domain_id FROM files WHERE {orphan}", (cutoff,)):
                 (FILE_DIR / f["domain_id"] / f["id"]).unlink(missing_ok=True)
-            x("DELETE FROM files WHERE created_at < ?", (cutoff,))
-            DB.execute("DELETE FROM task_events WHERE created_at < ?", (cutoff,))
+            x(f"DELETE FROM files WHERE {orphan}", (cutoff,))
+            DB.execute("DELETE FROM task_events WHERE created_at < ? AND NOT EXISTS (SELECT 1 FROM tasks WHERE id = task_events.task_id)", (cutoff,))
             DB.commit()
         except Exception as e:
             DB.rollback()

@@ -333,14 +333,15 @@ def server_checks():
     _, d = poll("w")
     check("files/ir-deliver-inputs-only", "res2.txt" not in {f["name"] for f in d["task"]["files"]})
     report("w", tid, d["task"]["lease_id"], "completed", output="ok")
-    # retention sweep removes db row + staged bytes
+    # retention sweep removes unattached expired files, but keeps files of non-expired tasks
     gone = upload("gone.txt", b"bye")
-    sql("UPDATE files SET created_at=? WHERE id=?", (time.time() - 400, gone["id"]))
+    sql("UPDATE files SET created_at=? WHERE id IN (?,?)", (time.time() - 400, gone["id"], fu["id"]))
     end = time.time() + 12
     while time.time() < end and q1("SELECT 1 FROM files WHERE id=?", (gone["id"],)):
         time.sleep(0.5)
     check("files/retention", not q1("SELECT 1 FROM files WHERE id=?", (gone["id"],))
-          and not os.path.exists(os.path.join(SCRATCH, "files", "team-a", gone["id"])))
+          and not os.path.exists(os.path.join(SCRATCH, "files", "team-a", gone["id"]))
+          and bool(q1("SELECT 1 FROM files WHERE id=?", (fu["id"],))))
 
     # isolation + input validation at the trust boundary
     check("isolation/wrong-domain-token", call("GET", "/domains/team-b/agents")[0] == 401)
@@ -614,7 +615,7 @@ agent: {{id: {agent}, owner: u1, accept_policy: auto, accept_from: all}}
 notify: {{channel: log, id_type: text, id: u1}}
 workspace_dir: {os.path.join(SCRATCH, 'ws')}
 local_port: {free_port()}          # explicit: the derived default could collide with a stray process
-busy_poll_interval: 1
+busy_poll_interval: ${{A2A_BUSY_POLL:-1}}
 driver: {driver}
 """)
         self.log = open(self.logname, "ab")
@@ -684,12 +685,13 @@ def worker_checks():
     det = wait_status(new_task("wk", "no output"), "failed")
     check("worker/anti-fake-success", det.get("fail_reason") == "driver_error", det)
 
-    # NEED_INPUT marker -> input-required, question carried over
+    # NEED_INPUT marker -> input-required, full output + question carried over
     w.stop()
-    w = Worker("wk", '{kind: command, cmd: \'echo "NEED_INPUT: which branch?"\', timeout: 60, output: tail}', home)
+    w = Worker("wk", '{kind: command, cmd: \'echo "found two branches"; echo "NEED_INPUT: which branch?"\', timeout: 60, output: tail}', home)
     w.wait_online()
     det = wait_status(new_task("wk", "ask"), "input-required")
-    check("worker/need-input-marker", det["status"] == "input-required" and "branch" in json.dumps(det["convo"]), det)
+    check("worker/need-input-marker", det["status"] == "input-required"
+          and "found two branches" in json.dumps(det["convo"]) and "branch" in json.dumps(det["convo"]), det)
 
     # the marker must be the LAST line: merely mentioning it mid-text is a completion
     w.stop()
@@ -845,12 +847,19 @@ def cli_checks(wcfg):
     if tid:
         rc, out, _ = cli(wcfg, "get", "--task", tid)
         check("cli/get", rc == 0 and json.loads(out).get("id") == tid, out[:120])
-        rc, out, _ = cli(wcfg, "list", "--role", "initiator")
+        rc, out, _ = cli(wcfg, "list", "--role", "initiator", "--status", "available,working")
         check("cli/list", rc == 0 and tid in out, out[:120])
         rc, out, _ = cli(wcfg, "cancel", "--task", tid)
         check("cli/cancel", rc == 0 and q1("SELECT status FROM tasks WHERE id=?", (tid,))["status"] == "canceled", out[:120])
     rc, out, _ = cli(wcfg, "deregister")
     check("cli/deregister", rc == 0 and not q1("SELECT 1 FROM agents WHERE agent_id='wk'"), out[:120])
+    _, inv = call("POST", "/admin/op", {"op": "invite", "domain": "team-a"})
+    jcfg = os.path.join(SCRATCH, "cli-join.yaml")
+    rc, out, err = cli(jcfg, "join", "--server", f"http://127.0.0.1:{PORT}", "--domain", "team-a",
+                       "--code", inv["code"], "--agent-id", "cli-joined", "--owner", "u30",
+                       "--notify-channel", "log", "--notify-id", "n30")
+    rc2, out2, _ = cli(jcfg, "agents")
+    check("cli/join-writes-worker-yaml", rc == 0 and os.path.isfile(jcfg) and rc2 == 0 and "cli-joined" in out2, (rc, out[:80], err[:80]))
 
 
 def main():
@@ -861,7 +870,7 @@ def main():
     cfg = os.path.join(SCRATCH, "server.yaml")
     open(cfg, "w").write(f"""
 host: 127.0.0.1
-port: {PORT}
+port: ${{A2A_VERIFY_PORT:-{PORT}}}
 language: en
 public_base: http://127.0.0.1:{PORT}/    # trailing slash on purpose
 db_path: {os.path.join(SCRATCH, 'verify.db')}

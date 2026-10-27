@@ -46,8 +46,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   finished_at      REAL,
   approval_expires_at REAL
 );
-CREATE INDEX IF NOT EXISTS idx_tasks_target ON tasks(domain_id, target, status);
-CREATE INDEX IF NOT EXISTS idx_tasks_init   ON tasks(domain_id, initiator, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_target  ON tasks(domain_id, target, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_init    ON tasks(domain_id, initiator, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(domain_id, created_at);
 CREATE TABLE IF NOT EXISTS task_events (
   domain_id  TEXT NOT NULL,
   task_id    TEXT NOT NULL,
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS files (
   sha256     TEXT NOT NULL,
   created_at REAL NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_files_task ON files(domain_id, task_id, created_at);
 CREATE TABLE IF NOT EXISTS invites (
   code       TEXT PRIMARY KEY,
   domain_id  TEXT NOT NULL,

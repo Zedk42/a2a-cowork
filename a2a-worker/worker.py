@@ -47,11 +47,6 @@ def _expand(v, key=None):
     return v
 
 
-def _positive(v):
-    """Absent (None) or a positive number. bool is excluded: YAML `yes` is an int."""
-    return v is None or (not isinstance(v, bool) and isinstance(v, (int, float)) and v > 0)
-
-
 NEED_INPUT_MARKER = r"^NEED_INPUT:"
 
 
@@ -84,12 +79,12 @@ def load_cfg():
         sys.exit("worker.yaml error: driver needs a cmd string")
     if dd.get("output") not in (None, "last_json", "tail"):
         sys.exit(f"worker.yaml error: driver.output must be last_json or tail, got {dd.get('output')!r}")
-    for num in ("timeout", "manual_timeout_hours"):
-        if not _positive(dd.get(num)):
-            sys.exit(f"worker.yaml error: driver.{num} must be a positive number, got {dd.get(num)!r}")
-    for num in ("busy_poll_interval", "local_port"):
-        if not _positive(cfg.get(num)):
-            sys.exit(f"worker.yaml error: {num} must be a positive number, got {cfg.get(num)!r}")
+    for d, k, p in ((dd, "timeout", "driver."), (dd, "manual_timeout_hours", "driver."),
+                    (cfg, "busy_poll_interval", ""), (cfg, "local_port", "")):
+        try: v = d[k] = None if (v := d.get(k)) == "" else (int(v) if v.isdigit() else float(v)) if isinstance(v, str) else v
+        except ValueError: pass
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0):
+            sys.exit(f"worker.yaml error: {p}{k} must be a positive number, got {v!r}")
     return cfg
 
 
@@ -258,7 +253,11 @@ class Runner:
         import hashlib
         fdir = os.path.join(self._ws(), "files")
         os.makedirs(fdir, exist_ok=True)
+        seen = set()
         for f in self.task.get("files") or []:
+            if f["name"] in seen:
+                f["name"] = f"{f['id'][:8]}_{f['name']}"
+            seen.add(f["name"])
             s2, data = api(self.cfg, "GET", f"/domains/{self.cfg['domain']}/files/{f['id']}", raw=True, timeout=300)
             if s2 != 200:
                 raise RuntimeError(f"fetch {f['name']}: HTTP {s2}")

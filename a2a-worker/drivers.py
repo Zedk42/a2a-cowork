@@ -21,10 +21,10 @@ FAIL_DRIVER = {"status": "failed"}
 
 def _kill(proc):
     try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
-        else:
+        if os.name != "nt":
             os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid via start_new_session
+        elif proc.poll() is None:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
     except (ProcessLookupError, PermissionError):
         pass
     try:
@@ -41,7 +41,7 @@ def _marker_hit(marker, output):
         return None
     line = lines[-1]
     q = line.split(":", 1)[1].strip() if ":" in line else ""
-    return q or "(question not captured on the marker line — see the task output)"
+    return q or (lines[-2].strip() if len(lines) > 1 else "(question not captured on the marker line — see the task output)")
 
 
 def _last_json(raw):

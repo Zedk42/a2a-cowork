@@ -27,6 +27,9 @@ def _expand(v):
     return v
 
 
+DIRS = (Path(__file__).parent, Path(__file__).parent.parent / "a2a-worker", Path.home() / "a2a-cowork" / "a2a-worker")
+
+
 def load():
     import yaml  # lazy import: `join` runs before any venv/pyyaml exists
     env_cfg = os.environ.get("A2A_WORKER_CONFIG", "").strip()
@@ -35,9 +38,7 @@ def load():
         if not p.is_file():
             sys.exit(f"$A2A_WORKER_CONFIG is set to {p}, which does not exist")
     else:
-        cands = [Path(__file__).parent / "worker.yaml", Path(__file__).parent.parent / "a2a-worker" / "worker.yaml",
-                 Path.home() / "a2a-cowork" / "a2a-worker" / "worker.yaml"]
-        p = next((c for c in cands if c.is_file()), None)
+        p = next((d / "worker.yaml" for d in DIRS if (d / "worker.yaml").is_file()), None)
     if not p:
         sys.exit("no worker.yaml found (looked in $A2A_WORKER_CONFIG, here, ../a2a-worker, "
                  "and ~/a2a-cowork/a2a-worker); run onboarding per SKILL.md first")
@@ -79,6 +80,7 @@ def upload_file(cfg, path):
 def fetch_file(cfg, fid, out=None):
     data, headers = call(cfg, "GET", f"/domains/{cfg['domain']}/files/{fid}", raw=True, timeout=300)
     dest = out or (n if (n := os.path.basename(headers.get_filename() or "")) not in ("", ".", "..") else fid)
+    dest = f"{fid[:8]}_{dest}" if not out and os.path.exists(dest) else dest
     with open(dest, "wb") as f:
         f.write(data)
     return dest
@@ -102,11 +104,13 @@ def main():
     p2.add_argument("--out", default=None, help="local output path (default: stored name)")
     p = sub.add_parser("action"); p.add_argument("--task", required=True); p.add_argument("--action", required=True, choices=["approve", "reject", "abort"])
     sub.add_parser("deregister", help="leave the team (stop your worker first)")
-    p = sub.add_parser("join", help="redeem an invite code; prints the join result incl. domain_token for worker.yaml")
+    p = sub.add_parser("join", help="redeem an invite code and write worker.yaml")
     p.add_argument("--server", required=True); p.add_argument("--domain", required=True); p.add_argument("--code", required=True)
     p.add_argument("--agent-id", required=True); p.add_argument("--owner", required=True)
     p.add_argument("--desc", default=""); p.add_argument("--policy", default="notify_run")
     p.add_argument("--notify-channel", required=True); p.add_argument("--notify-id-type", default="auto"); p.add_argument("--notify-id", required=True)
+    p.add_argument("--cmd", dest="driver_cmd", default="claude -p --output-format json --permission-mode acceptEdits")
+    p.add_argument("--output", default="last_json", choices=["last_json", "tail"]); p.add_argument("--cwd", default="")
     a = ap.parse_args()
     cfg = {"server_url": a.server.rstrip("/"), "domain_token": ""} if a.cmd == "join" else load()
     d = a.domain if a.cmd == "join" else cfg["domain"]
@@ -114,8 +118,21 @@ def main():
         if a.cmd == "join":
             body = {"code": a.code, "agent_id": a.agent_id, "owner_username": a.owner,
                     "description": a.desc, "accept_policy": a.policy,
+                    "driver_kind": "manual" if a.driver_cmd == "manual" else "command",
                     "notify": {"channel": a.notify_channel, "id_type": a.notify_id_type, "id": a.notify_id}}
-            print(json.dumps(call(cfg, "POST", f"/domains/{d}/join", body), ensure_ascii=False))
+            res = call(cfg, "POST", f"/domains/{d}/join", body)
+            env_cfg = os.environ.get("A2A_WORKER_CONFIG", "").strip()
+            wp = Path(env_cfg) if env_cfg else next((c for c in DIRS[1:] if c.is_dir()), DIRS[0]) / "worker.yaml"
+            q = lambda v: json.dumps(v, ensure_ascii=False)
+            drv = "  kind: manual\n  manual_timeout_hours: 24" if a.driver_cmd == "manual" else (
+                "  kind: command\n" + (f"  cwd: {q(a.cwd)}\n" if a.cwd else "")
+                + f"  cmd: {q(a.driver_cmd)}\n  timeout: 3600\n  output: {a.output}")
+            wp.write_text(f"server_url: {q(cfg['server_url'])}\ndomain: {q(d)}\ndomain_token: {q(res['domain_token'])}\n"
+                          f"agent:\n  id: {q(a.agent_id)}\n  owner: {q(a.owner)}\n  description: {q(a.desc)}\n"
+                          f"  accept_policy: {q(a.policy)}\n  accept_from: all\n"
+                          f"notify:\n  channel: {q(a.notify_channel)}\n  id_type: {q(a.notify_id_type)}\n  id: {q(a.notify_id)}\n"
+                          f"workspace_dir: ~/.a2a-worker/tasks\nbusy_poll_interval: 5\ndriver:\n{drv}\n", encoding="utf-8")
+            print(json.dumps({**res, "config": str(wp)}, ensure_ascii=False))
         elif a.cmd == "agents":
             for x in call(cfg, "GET", f"/domains/{d}/agents"):
                 print(f"{'●' if x['online'] else '○'} {x['agent_id']:<24} {x['accept_policy']:<10} {x['driver_kind']:<10} {x['description']}")
@@ -134,14 +151,8 @@ def main():
                     return
                 time.sleep(2)
         elif a.cmd == "list":
-            out = []
-            for st in (a.status.split(",") if a.status and "," in a.status else [a.status]):
-                q = f"?status={st}" if st else ""
-                if a.role:
-                    q += ("&" if q else "?") + f"role={a.role}"
-                out += call(cfg, "GET", f"/domains/{d}/tasks{q}")
-            out.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-            print(json.dumps(out, ensure_ascii=False, indent=1))
+            qs = urllib.parse.urlencode({k: v for k, v in (("status", a.status), ("role", a.role)) if v})
+            print(json.dumps(call(cfg, "GET", f"/domains/{d}/tasks" + (f"?{qs}" if qs else "")), ensure_ascii=False, indent=1))
         elif a.cmd == "cancel":
             print(json.dumps(call(cfg, "POST", f"/domains/{d}/tasks/{a.task}/cancel", {}), ensure_ascii=False))
         elif a.cmd == "msg":

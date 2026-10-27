@@ -52,22 +52,12 @@ api.py deregister                                # leave the team (stop the work
 If `worker.yaml` already exists in `~/a2a-cowork/a2a-worker` (or `../a2a-worker`),
 make sure the worker is running and skip to [Dispatching](#dispatching-a-task):
 
-- macOS / Linux: `cd ~/a2a-cowork/a2a-worker && nohup ./start.sh > ~/a2a-worker.log 2>&1 &`
-- Windows: `start /b cmd /c "cd %USERPROFILE%\a2a-cowork\a2a-worker && start.cmd > "%USERPROFILE%\a2a-worker.log" 2>&1"`
+- macOS / Linux: `nohup ~/a2a-cowork/a2a-worker/start.sh > ~/a2a-worker.log 2>&1 &`
+- Windows: `start /b cmd /c ""%USERPROFILE%\a2a-cowork\a2a-worker\start.cmd" > "%USERPROFILE%\a2a-worker.log" 2>&1"`
 
-Otherwise, clone the repository first if neither `~/a2a-cowork/a2a-worker/worker.py`
-nor `../a2a-worker/worker.py` exists:
-
-- macOS / Linux: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork`
-- Windows: `git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git %USERPROFILE%\a2a-cowork`
-  (no git installed? download the repository zip from GitHub and extract it as
-  `a2a-cowork` in your home directory)
-
-Ask whoever runs the server for one sentence with three things: the server
-address, the domain id, and an **invite code** (or the full one-liner from the
-admin console). A domain token handed over directly also works; with a code you
-never need the raw token. Then ask the owner, never guessing from the system
-(`whoami` output is not a username):
+Otherwise, ask whoever runs the server for the one-line join command from the
+admin console (or the server address, domain id, and **invite code**). Then ask
+the owner, never guessing from the system (`whoami` output is not a username):
 
 1. Agent id: suggest `{owner}-{tool}`, e.g. `zhangsan-claude`.
 2. Owner username for notifications.
@@ -84,21 +74,14 @@ Confirm instead of asking cold: the accept policy defaults to `notify_run`
 and the description follows `<what it does>; input: <what a task must contain>;
 output: <what comes back>` so dispatchers can route tasks.
 
-Redeem the invite code (`api.py join` uses only the Python standard library, so
-system `python3` / `py -3` works before any `.venv` exists) — the response
-carries the `domain_token` for `worker.yaml`:
+Run the single onboarding command (`api.py join` uses only the Python standard
+library, redeems the invite, and writes `worker.yaml` directly; pass `--desc`,
+`--policy`, `--cmd`, `--output last_json|tail`, or `--cwd` to customize the
+driver, or `--cmd manual` for manual mode; `start.sh` / `start.cmd` creates
+`.venv` and installs `pyyaml` automatically on first run):
 
-- macOS / Linux: `python3 api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id <id>`
-- Windows: `py -3 api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id <id>`
-
-Copy `worker.example.yaml` to `worker.yaml` inside `~/a2a-cowork/a2a-worker`,
-fill in the agent/notify answers and the returned `domain_token`, point the
-`driver:` block at this tool (its `cmd`, `output` mode, and optional `cwd`),
-and start the worker in the background (`start.sh` / `start.cmd` creates `.venv`
-and installs `pyyaml` automatically on first run):
-
-- macOS / Linux: `cd ~/a2a-cowork/a2a-worker && nohup ./start.sh > ~/a2a-worker.log 2>&1 &`
-- Windows: `start /b cmd /c "cd %USERPROFILE%\a2a-cowork\a2a-worker && start.cmd > "%USERPROFILE%\a2a-worker.log" 2>&1"`
+- macOS / Linux: `([ -d ~/a2a-cowork ] || git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork) && python3 ~/a2a-cowork/a2a-skill/api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id <id> && nohup ~/a2a-cowork/a2a-worker/start.sh > ~/a2a-worker.log 2>&1 &`
+- Windows: `(if not exist "%USERPROFILE%\a2a-cowork" git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git "%USERPROFILE%\a2a-cowork") && py -3 "%USERPROFILE%\a2a-cowork\a2a-skill\api.py" join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id <id> && start /b cmd /c ""%USERPROFILE%\a2a-cowork\a2a-worker\start.cmd" > "%USERPROFILE%\a2a-worker.log" 2>&1"`
 
 The worker registers with its driver details on startup. If `~/a2a-worker.log`
 warns "notify channel not verified", have the owner re-check the ID and

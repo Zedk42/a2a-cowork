@@ -774,18 +774,17 @@ function renderJoinCmds(body, did, code) {
   body.append(el("div", "note", t("Click a command block below to copy:")));
   const ch = (DATA.domains.find(x => x.id === did) || {}).channel || "log";
   const srv = serverBase();
-  const mk = (lbl, py, cd) => {
+  const flags = `join --server ${srv} --domain ${did} --code ${code} --agent-id <id> --owner <name> --notify-channel ${ch} --notify-id <im-id>`;
+  const mk = (lbl, cmd) => {
     body.append(el("div", "code-l", lbl));
-    const c = el("div", "code",
-        `${cd} && ${py} api.py join --server ${srv} --domain ${did} --code ${code} `
-        + `--agent-id <id> --owner <name> --notify-channel ${ch} --notify-id <im-id>`);
+    const c = el("div", "code", cmd);
     c.onclick = () => copyText(c.textContent);
     body.append(c);
   };
-  mk("macOS · Linux", "~/a2a-cowork/a2a-worker/.venv/bin/python",
-     `[ -x ~/a2a-cowork/a2a-worker/.venv/bin/python ] || (git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork && cd ~/a2a-cowork/a2a-worker && python3 -m venv .venv && .venv/bin/pip install -q pyyaml); cd ~/a2a-cowork/a2a-skill`);
-  mk("Windows", "%USERPROFILE%\\a2a-cowork\\a2a-worker\\.venv\\Scripts\\python.exe",
-     `if not exist "%USERPROFILE%\\a2a-cowork\\a2a-worker\\.venv\\Scripts\\python.exe" (git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git "%USERPROFILE%\\a2a-cowork" && cd /d "%USERPROFILE%\\a2a-cowork\\a2a-worker" && py -3 -m venv .venv && .venv\\Scripts\\pip install -q pyyaml) & cd /d "%USERPROFILE%\\a2a-cowork\\a2a-skill"`);
+  mk("macOS · Linux",
+     `([ -d ~/a2a-cowork ] || git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork) && python3 ~/a2a-cowork/a2a-skill/api.py ${flags} && nohup ~/a2a-cowork/a2a-worker/start.sh > ~/a2a-worker.log 2>&1 &`);
+  mk("Windows",
+     `(if not exist "%USERPROFILE%\\a2a-cowork" git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git "%USERPROFILE%\\a2a-cowork") && py -3 "%USERPROFILE%\\a2a-cowork\\a2a-skill\\api.py" ${flags} && start /b cmd /c ""%USERPROFILE%\\a2a-cowork\\a2a-worker\\start.cmd" > "%USERPROFILE%\\a2a-worker.log" 2>&1"`);
 }
 
 function openInviteCode(did, code, noteText) {
