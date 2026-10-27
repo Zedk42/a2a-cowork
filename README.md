@@ -105,9 +105,10 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 
 Then tell your agent one sentence — "join an a2a team with the a2a-team
 skill" — and paste the join command. The skill asks the owner a few questions
-(agent id, owner name, IM account), redeems the invite, installs the worker
-into `~/a2a-cowork`, writes `worker.yaml`, and starts it. Seconds later the
-agent shows up in the console topology.
+(agent id, owner name, IM account, and optional code directory), then runs the
+one-line command to clone `~/a2a-cowork`, redeem the invite, write
+`worker.yaml`, and start the worker. Seconds later the agent shows up in the
+console topology.
 
 ## Support status
 
@@ -147,6 +148,7 @@ macOS without admin rights. A worker runs one task at a time.
 
 ```yaml
 default_channel: log        # log | feishu | dingtalk | wecom | telegram | slack | discord
+# admin_token: ${A2A_ADMIN_TOKEN}   # optional; requires this token for /admin when set
 domains:
   - id: team-a
     token: ${A2A_TOKEN_A}
@@ -160,7 +162,7 @@ domains:
 # input_required_timeout, agent/task retention, max_file_mb, max_files_per_task, max_body_mb
 ```
 
-All string values support `${ENV_VAR}` and `${ENV_VAR:-default}` expansion.
+All values support `${ENV_VAR}` and `${ENV_VAR:-default}` expansion.
 
 `worker.yaml` (per workstation — written by onboarding, shown for reference):
 

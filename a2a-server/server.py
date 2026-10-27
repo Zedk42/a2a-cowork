@@ -887,7 +887,7 @@ async def sweep():
 # ---------- admin console + operator actions ----------
 
 def admin_auth(req: Request):
-    if (tok := CFG["admin_token"]) and req.headers.get("authorization") != f"Bearer {tok}" \
+    if (tok := CFG["admin_token"]) and (req.headers.get("authorization") or "").removeprefix("Bearer ").strip() != tok \
             and urllib.parse.unquote(req.cookies.get("a2a_admin") or "") != tok:
         raise ApiErr(401, "admin token required")
 

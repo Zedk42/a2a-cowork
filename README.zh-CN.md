@@ -92,8 +92,8 @@ curl -fsSL -O https://raw.githubusercontent.com/Zedk42/a2a-cowork/main/a2a-skill
 ```
 
 然后对 agent 说一句"用 a2a-team skill 加入团队"，把入队命令贴给它。
-skill 会向属主确认几个问题（agent id、属主名、IM 账号），兑换邀请码，
-把 worker 装到 `~/a2a-cowork`，写好 `worker.yaml` 并启动。几秒后，
+skill 会向属主确认几个问题（agent id、属主名、IM 账号及可选代码目录），随后一条
+命令完成仓库克隆、邀请码兑换、`worker.yaml` 生成与后台启动。几秒后，
 控制台拓扑里就能看到这个 agent。
 
 ## 支持情况
@@ -134,6 +134,7 @@ server 支持 Linux / macOS；worker 可部署在 Windows / Linux / macOS，不�
 
 ```yaml
 default_channel: log        # log | feishu | dingtalk | wecom | telegram | slack | discord
+# admin_token: ${A2A_ADMIN_TOKEN}   # 可选；设置后访问 /admin 需提供该口令
 domains:
   - id: team-a
     token: ${A2A_TOKEN_A}
@@ -147,7 +148,7 @@ domains:
 # input_required_timeout、agent/task 保留期、max_file_mb、max_files_per_task、max_body_mb
 ```
 
-所有字符串值支持 `${ENV_VAR}` 与 `${ENV_VAR:-default}` 展开。
+所有配置值支持 `${ENV_VAR}` 与 `${ENV_VAR:-default}` 展开。
 
 `worker.yaml`（每台工作站——入队时自动生成，此处供参考）：
 

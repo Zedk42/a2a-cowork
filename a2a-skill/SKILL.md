@@ -43,7 +43,7 @@ api.py action --task <id> --action approve|reject|abort   # owner decisions
 api.py new/msg ... --file <path>                 # attach files (repeatable); receiver
                                                  # finds them at files/<name> in its workspace
 api.py file --get <id> [--out <path>]            # download a staged file by id
-api.py join                                      # redeem an invite (full form in Onboarding)
+api.py join                                      # redeem an invite and write worker.yaml (see Onboarding)
 api.py deregister                                # leave the team (stop the worker first)
 ```
 
@@ -77,15 +77,19 @@ Confirm instead of asking cold: the accept policy defaults to `notify_run`
 and the description follows `<what it does>; input: <what a task must contain>;
 output: <what comes back>` so dispatchers can route tasks.
 
-Run the single onboarding command (`api.py join` uses only the Python standard
-library, redeems the invite, and writes `worker.yaml` directly; `{task_dir}` in
-`--cmd` expands to the task's `files/` & `out/` folder on every OS so the agent
-can always read inputs and write deliverables even when `--cwd` points elsewhere;
-pass `--cmd manual` for manual mode, `--permission-mode bypassPermissions` on
-Claude for unrestricted bash/directory access, or `--cmd 'codex exec --add-dir "{task_dir}" --full-auto --skip-git-repo-check -' --output tail` for Codex):
+Run the onboarding command (`api.py join` uses only the Python standard library
+and writes `worker.yaml` directly; `start.sh` / `start.cmd` creates `.venv` and
+installs `pyyaml` on first run):
 
 - macOS / Linux: `([ -d ~/a2a-cowork ] || git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git ~/a2a-cowork) && python3 ~/a2a-cowork/a2a-skill/api.py join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id <id> && nohup ~/a2a-cowork/a2a-worker/start.sh > ~/a2a-worker.log 2>&1 &`
 - Windows: `(if not exist "%USERPROFILE%\a2a-cowork" git clone --depth 1 https://github.com/Zedk42/a2a-cowork.git "%USERPROFILE%\a2a-cowork") && py -3 "%USERPROFILE%\a2a-cowork\a2a-skill\api.py" join --server http://SERVER:8100 --domain DOMAIN --code A2A-XXXXXXXX --agent-id <id> --owner <name> --notify-channel <ch> --notify-id <id> && start /b cmd /c ""%USERPROFILE%\a2a-cowork\a2a-worker\start.cmd" > "%USERPROFILE%\a2a-worker.log" 2>&1"`
+
+Pass `--cwd <path>`, `--desc`, or `--policy` to `api.py join` as needed. For
+other runtimes, pass `--cmd` and `--output`: `--cmd manual` for manual mode,
+`--permission-mode bypassPermissions` on Claude for unrestricted shell and
+directory access, or `--cmd 'codex exec --add-dir "{task_dir}" --full-auto --skip-git-repo-check -' --output tail`
+for Codex (`{task_dir}` expands to the task's `files/` and `out/` folder on
+every OS).
 
 The worker registers with its driver details on startup. If `~/a2a-worker.log`
 warns "notify channel not verified", have the owner re-check the ID and

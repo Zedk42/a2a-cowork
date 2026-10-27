@@ -4,8 +4,9 @@ server.py: /admin/data (snapshot), /admin/task/{id} (full convo and events),
 invite / invite_revoke / kick / disable / enable / task_abort). Vanilla JS +
 inline SVG, no build step, no external assets (works fully offline on an
 intranet); everything user-supplied is rendered via textContent, so no HTML
-escaping is needed. Unauthenticated by design: it serves a trusted LAN. UI is
-bilingual (EN/中文, toggled in the header).
+escaping is needed. Optional token auth (admin_token in server.yaml, via Bearer
+header or a2a_admin cookie; open when unset). UI is bilingual (EN/中文, toggled
+in the header).
 
 Rendering is section-based: each section (topology, agents, invites, tasks,
 the overview cards) keeps a signature of its data slice and is rebuilt only
@@ -340,9 +341,16 @@ function fmtSize(n) {
 
 /* ---------- api ---------- */
 
+let AUTH_ASKED = false;
 async function api(path, opts = {}) {
-  return fetch(path, Object.assign({}, opts,
+  const r = await fetch(path, Object.assign({}, opts,
       {headers: Object.assign({"Content-Type": "application/json"}, opts.headers || {})}));
+  if (r.status === 401 && (!AUTH_ASKED || opts.method) && (AUTH_ASKED = true)) {
+    const v = prompt(t("Admin token:"));
+    if (v != null) { document.cookie = "a2a_admin=" + encodeURIComponent(v) + "; path=/admin; SameSite=Strict"; AUTH_ASKED = false; return api(path, opts); }
+  }
+  if (r.ok) AUTH_ASKED = false;
+  return r;
 }
 async function op(body) {
   const r = await api("/admin/op", {method: "POST", body: JSON.stringify(body)});
@@ -881,17 +889,11 @@ async function showTask(id) {
 
 /* ---------- refresh ---------- */
 
-let AUTH_ASKED = false;
 async function poll() {
   if (document.hidden) return;
   try {
     const r = await api("/admin/data");
-    if (r.status === 401 && !AUTH_ASKED && (AUTH_ASKED = true)) {
-      const v = prompt(t("Admin token:"));
-      if (v != null) { document.cookie = "a2a_admin=" + encodeURIComponent(v) + "; path=/admin; SameSite=Strict"; AUTH_ASKED = false; return poll(); }
-    }
     if (!r.ok) throw new Error("HTTP " + r.status);
-    AUTH_ASKED = false;
     DATA = await r.json();
     render();
     $("#live-note").textContent = t("live · 3s");

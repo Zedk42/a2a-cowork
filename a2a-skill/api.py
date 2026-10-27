@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """CLI for A2A Co-Work (used by the a2a-team skill and humans).
 
-Reads connection info from worker.yaml next to this file (or A2A_WORKER_CONFIG).
+Reads connection info from worker.yaml ($A2A_WORKER_CONFIG, here, ../a2a-worker, or ~/a2a-cowork/a2a-worker).
 Commands: agents | new | get | list | cancel | msg | action | file | deregister | join
-(join is standalone and stdlib-only: it redeems an invite code before any worker.yaml exists)
+(join is standalone and stdlib-only: it redeems an invite code and writes worker.yaml)
 """
 import argparse
 import json
