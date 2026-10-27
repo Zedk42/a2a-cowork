@@ -1,4 +1,4 @@
-import asyncio, hashlib, json, os, re, secrets, signal, time, uuid
+import asyncio, hashlib, json, os, re, secrets, signal, time, urllib.parse, uuid
 from pathlib import Path
 
 import yaml
@@ -15,7 +15,7 @@ from db import INFLIGHT, connect
 # run in a worker thread (asyncio.to_thread) AFTER committing the state transition.
 
 DEFAULTS = {
-    "host": "0.0.0.0", "port": 8100, "language": "zh", "db_path": "a2a.db",
+    "host": "0.0.0.0", "port": 8100, "language": "zh", "db_path": "a2a.db", "admin_token": "",
     "default_channel": "log", "public_base": "", "online_timeout": 90,
     "poll_wait": 30, "sweep_interval": 5, "dispatch_grace": 60, "agent_retention": 259200,
     "task_retention": 2592000, "approval_timeout": 1800, "input_required_timeout": 86400,
@@ -30,7 +30,7 @@ def env_expand(v):
     return re.sub(r"\$\{(\w+)(?::-([^}]*))?\}", lambda m: os.environ.get(m.group(1)) or m.group(2) or "", v) if isinstance(v, str) else v
 
 
-_cfg_path = Path(os.environ.get("A2A_SERVER_CONFIG", Path(__file__).parent / "server.yaml"))
+_cfg_path = Path(os.environ.get("A2A_SERVER_CONFIG", Path(__file__).resolve().parent / "server.yaml")).resolve()
 if not _cfg_path.exists():
     raise SystemExit(f"config not found: {_cfg_path} (copy server.example.yaml to server.yaml)")
 _raw_cfg = yaml.safe_load(_cfg_path.read_text()) or {}
@@ -66,9 +66,11 @@ for _dm in CFG["domains"]:
 if CFG["language"] not in notify.MESSAGES:
     raise SystemExit(f"config error: language {CFG['language']!r} not in catalog {list(notify.MESSAGES)}")
 CFG["public_base"] = str(CFG["public_base"] or "").rstrip("/")
+CFG["admin_token"] = str(CFG.get("admin_token") or "")
 notify.set_lang(CFG["language"])
-DB = connect(CFG["db_path"])
-FILE_DIR = Path(CFG["db_path"]).parent / "files"
+_db_path = _cfg_path.parent / Path(str(CFG["db_path"])).expanduser()
+DB = connect(_db_path)
+FILE_DIR = _db_path.parent / "files"
 WAITERS = {}  # (domain, agent_id) -> asyncio.Event, woken when work appears
 DEREGISTERED = {}  # (domain, agent_id) -> expiry tombstone (410)
 STOPPING = False
@@ -747,6 +749,7 @@ async def results(d, aid, req: Request):
     status = b.get("status")
     out_text = str(b.get("output") or "")
     fmeta = _claim_files(d, b.get("files") or [], task["id"], kind="out", enforce_cap=False)
+    fhint = f"\n[files: {', '.join(f['name'] for f in fmeta)}]" if fmeta else ""
     if status == "completed":
         convo = json.loads(task["convo"])
         convo.append({"from": aid, "text": out_text, "at": now(),
@@ -754,7 +757,7 @@ async def results(d, aid, req: Request):
         x("UPDATE tasks SET status='completed', convo=?, finished_at=? WHERE id=? AND status IN ('dispatched','working')",
           (json.dumps(convo, ensure_ascii=False), now(), task["id"]))
         emit(task["id"], d, "state_change", {"to": "completed"})
-        await notify_task(task, "task_completed", output_head=out_text[:400])
+        await notify_task(task, "task_completed", output_head=out_text[:400] + fhint)
     elif status == "failed":
         reason = b.get("fail_reason")
         await fail_task(task, reason if isinstance(reason, str) and reason else "driver_error",
@@ -768,7 +771,7 @@ async def results(d, aid, req: Request):
           (now(), json.dumps(convo, ensure_ascii=False), task["id"]))
         DB.commit()
         emit(task["id"], d, "state_change", {"to": "input-required"})
-        await notify_task(task, "input_required", to="initiator", question=question or out_text[:400])
+        await notify_task(task, "input_required", to="initiator", question=(question or out_text[:400]) + fhint)
     else:
         raise ApiErr(400, "bad status")
     wake(d, aid)
@@ -883,13 +886,20 @@ async def sweep():
 
 # ---------- admin console + operator actions ----------
 
+def admin_auth(req: Request):
+    if (tok := CFG["admin_token"]) and req.headers.get("authorization") != f"Bearer {tok}" \
+            and urllib.parse.unquote(req.cookies.get("a2a_admin") or "") != tok:
+        raise ApiErr(401, "admin token required")
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin():
     return ADMIN_HTML
 
 
 @app.get("/admin/data")
-async def admin_data():
+async def admin_data(req: Request):
+    admin_auth(req)
     t = now()
     agents = []
     for a in q("SELECT * FROM agents ORDER BY domain_id, agent_id"):
@@ -926,6 +936,7 @@ async def admin_op(req: Request):
     """Operator actions, one endpoint: invite | invite_revoke | kick | disable
     | enable | task_abort. kick = deregister; disable = kick + deny
     re-registration."""
+    admin_auth(req)
     b = await json_body(req)
     op, d = b.get("op"), b.get("domain")
     if any(v is not None and not isinstance(v, (str, int, float, bool)) for v in b.values()):
@@ -961,7 +972,8 @@ async def admin_op(req: Request):
 
 
 @app.get("/admin/task/{tid}")
-async def admin_task(tid):
+async def admin_task(tid, req: Request):
+    admin_auth(req)
     task = q1("SELECT * FROM tasks WHERE id=?", (tid,))
     if not task:
         raise ApiErr(404, "no task")
@@ -969,7 +981,8 @@ async def admin_task(tid):
 
 
 @app.get("/admin/file/{fid}")
-async def admin_file(fid):
+async def admin_file(fid, req: Request):
+    admin_auth(req)
     return _send_file(q1("SELECT * FROM files WHERE id=?", (fid,)))
 
 

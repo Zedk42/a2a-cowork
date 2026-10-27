@@ -5,6 +5,7 @@ port: 8100
 language: zh            # zh | en (add a dict in notify.py MESSAGES for more)
 public_base: http://127.0.0.1:8100   # used in notification texts
 db_path: a2a.db
+# admin_token: ${A2A_ADMIN_TOKEN}    # optional; when set, /admin requires this token
 
 # One IM per domain: each domain entry may set its own `channel`; owners bind on
 # exactly that one. default_channel is the fallback for domains without an

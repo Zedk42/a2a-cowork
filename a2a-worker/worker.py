@@ -27,7 +27,7 @@ import yaml
 
 import drivers
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent
 HOME = Path.home() / ".a2a-worker"
 SESSION = uuid.uuid4().hex
 VALID_REPORT = ("completed", "failed", "input-required")

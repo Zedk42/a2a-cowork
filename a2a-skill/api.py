@@ -27,7 +27,8 @@ def _expand(v):
     return v
 
 
-DIRS = (Path(__file__).parent, Path(__file__).parent.parent / "a2a-worker", Path.home() / "a2a-cowork" / "a2a-worker")
+_HERE = Path(__file__).resolve().parent
+DIRS = (_HERE, _HERE.parent / "a2a-worker", Path.home() / "a2a-cowork" / "a2a-worker")
 
 
 def load():
@@ -109,7 +110,7 @@ def main():
     p.add_argument("--agent-id", required=True); p.add_argument("--owner", required=True)
     p.add_argument("--desc", default=""); p.add_argument("--policy", default="notify_run")
     p.add_argument("--notify-channel", required=True); p.add_argument("--notify-id-type", default="auto"); p.add_argument("--notify-id", required=True)
-    p.add_argument("--cmd", dest="driver_cmd", default="claude -p --output-format json --permission-mode acceptEdits")
+    p.add_argument("--cmd", dest="driver_cmd", default='claude -p --add-dir "{task_dir}" --output-format json --permission-mode acceptEdits')
     p.add_argument("--output", default="last_json", choices=["last_json", "tail"]); p.add_argument("--cwd", default="")
     a = ap.parse_args()
     cfg = {"server_url": a.server.rstrip("/"), "domain_token": ""} if a.cmd == "join" else load()
@@ -124,8 +125,9 @@ def main():
             env_cfg = os.environ.get("A2A_WORKER_CONFIG", "").strip()
             wp = Path(env_cfg) if env_cfg else next((c for c in DIRS[1:] if c.is_dir()), DIRS[0]) / "worker.yaml"
             q = lambda v: json.dumps(v, ensure_ascii=False)
+            cwd = os.path.abspath(os.path.expanduser(a.cwd)) if a.cwd else ""
             drv = "  kind: manual\n  manual_timeout_hours: 24" if a.driver_cmd == "manual" else (
-                "  kind: command\n" + (f"  cwd: {q(a.cwd)}\n" if a.cwd else "")
+                "  kind: command\n" + (f"  cwd: {q(cwd)}\n" if cwd else "")
                 + f"  cmd: {q(a.driver_cmd)}\n  timeout: 3600\n  output: {a.output}")
             wp.write_text(f"server_url: {q(cfg['server_url'])}\ndomain: {q(d)}\ndomain_token: {q(res['domain_token'])}\n"
                           f"agent:\n  id: {q(a.agent_id)}\n  owner: {q(a.owner)}\n  description: {q(a.desc)}\n"

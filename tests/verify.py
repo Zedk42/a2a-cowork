@@ -277,7 +277,8 @@ def server_checks():
     fu = upload("notes.txt", b"hello-file-42")
     check("files/upload-meta", fu["name"] == "notes.txt" and fu["size"] == 13 and len(fu["sha256"]) == 64, fu)
     check("files/dotdot-sanitized", upload("..", b"d")["name"] == "file")
-    check("files/admin-download", urllib.request.urlopen(f"http://127.0.0.1:{PORT}/admin/file/{fu['id']}").read() == b"hello-file-42")
+    adm_f = urllib.request.Request(f"http://127.0.0.1:{PORT}/admin/file/{fu['id']}", headers={"Cookie": f"a2a_admin={TOKEN}"})
+    check("files/admin-download", urllib.request.urlopen(adm_f).read() == b"hello-file-42")
     try:
         upload("big.bin", b"x" * (1024 * 1024 + 1))  # cap is 1MB in this suite's config
         check("files/size-cap", False, "oversize accepted")
@@ -308,7 +309,8 @@ def server_checks():
     report("w", tid, d["task"]["lease_id"], "completed", output="done", files=[fu3["id"]])
     det = call("GET", f"/domains/team-a/tasks/{tid}")[1]
     check("files/attach-meta", det["convo"][2]["files"][0]["name"] == "data.csv"
-          and det["convo"][3]["files"][0]["name"] == "result.zip" and len(det["files"]) == 2, det.get("files"))
+          and det["convo"][3]["files"][0]["name"] == "result.zip" and len(det["files"]) == 2
+          and any(tid in e["payload"] and "result.zip" in e["payload"] for e in det["events"] if e["type"] == "notify"), det.get("files"))
     # per-task count cap (3 in this suite's config) applies to initiator attachments...
     ids = [upload(f"f{i}.txt", b"x")["id"] for i in range(4)]
     s_cap, r_cap = call("POST", "/domains/team-a/tasks", {"target": "w", "text": "cap", "files": ids}, agent="boss")
@@ -345,8 +347,9 @@ def server_checks():
 
     # isolation + input validation at the trust boundary
     check("isolation/wrong-domain-token", call("GET", "/domains/team-b/agents")[0] == 401)
-    # the console serves the trusted LAN unauthenticated
-    check("admin/open-no-auth", status_only("/admin") == 200 and call("GET", "/admin/data")[0] == 200)
+    check("admin/token-auth", status_only("/admin") == 200 and call("GET", "/admin/data", token="bad")[0] == 401
+          and call("POST", "/admin/op", {"op": "invite", "domain": "team-a"}, token="bad")[0] == 401
+          and call("GET", "/admin/data")[0] == 200)
     s, r = call("POST", "/domains/team-a/tasks", [1, 2, 3], agent="boss")
     check("validation/non-dict-body->400", s == 400, (s, r))
     s, r = call("POST", "/domains/team-a/tasks", {"target": "w", "text": 123}, agent="boss")
@@ -700,10 +703,11 @@ def worker_checks():
     det = wait_status(new_task("wk", "mentions marker"), "completed")
     check("worker/marker-mid-text-completes", det["status"] == "completed", det)
 
-    # file roundtrip with a real worker: input materialized to files/, outbox uploaded back
-    # (two outbox files also exercise the one-upload-per-heartbeat-tick path, and 0-byte files are skipped)
+    # file roundtrip with a real worker: input materialized to files/, outbox uploaded back,
+    # custom cwd + {task_dir} placeholder exercises cross-directory file access
     w.stop()
-    w = Worker("wk", "{kind: command, cmd: 'mkdir -p out && touch out/empty.txt && cp files/in.txt out/copied.txt && cp files/in.txt out/second.txt && cat files/in.txt', timeout: 60, output: tail}", home)
+    cdir = os.path.join(SCRATCH, "custom-cwd")
+    w = Worker("wk", f"{{kind: command, cwd: {cdir}, cmd: 'mkdir -p \"{{task_dir}}/out\" && touch \"{{task_dir}}/out/empty.txt\" && cp \"{{task_dir}}/files/in.txt\" \"{{task_dir}}/out/copied.txt\" && cp \"{{task_dir}}/files/in.txt\" \"{{task_dir}}/out/second.txt\" && cat \"{{task_dir}}/files/in.txt\"', timeout: 60, output: tail}}", home)
     w.wait_online()
     fid = upload("in.txt", b"roundtrip-payload-7")["id"]
     tid = call("POST", "/domains/team-a/tasks",
@@ -857,9 +861,10 @@ def cli_checks(wcfg):
     jcfg = os.path.join(SCRATCH, "cli-join.yaml")
     rc, out, err = cli(jcfg, "join", "--server", f"http://127.0.0.1:{PORT}", "--domain", "team-a",
                        "--code", inv["code"], "--agent-id", "cli-joined", "--owner", "u30",
-                       "--notify-channel", "log", "--notify-id", "n30")
+                       "--notify-channel", "log", "--notify-id", "n30", "--cwd", ".")
     rc2, out2, _ = cli(jcfg, "agents")
-    check("cli/join-writes-worker-yaml", rc == 0 and os.path.isfile(jcfg) and rc2 == 0 and "cli-joined" in out2, (rc, out[:80], err[:80]))
+    check("cli/join-writes-worker-yaml", rc == 0 and os.path.isfile(jcfg) and "{task_dir}" in open(jcfg).read()
+          and "a2a-skill" in open(jcfg).read() and rc2 == 0 and "cli-joined" in out2, (rc, out[:80], err[:80]))
 
 
 def main():
@@ -873,7 +878,8 @@ host: 127.0.0.1
 port: ${{A2A_VERIFY_PORT:-{PORT}}}
 language: en
 public_base: http://127.0.0.1:{PORT}/    # trailing slash on purpose
-db_path: {os.path.join(SCRATCH, 'verify.db')}
+db_path: verify.db
+admin_token: {TOKEN}
 domains:
   - id: team-a
     token: {TOKEN}

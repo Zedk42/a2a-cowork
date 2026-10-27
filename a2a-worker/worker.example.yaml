@@ -21,8 +21,12 @@ workspace_dir: ~/.a2a-worker/tasks
 busy_poll_interval: 5
 driver:
   kind: command                  # command (subprocess) | manual (you run it, then `python worker.py report`)
-  # cwd: ~/my-project            # optional working directory for the CLI (task files stay in $A2A_TASK_DIR)
-  cmd: 'claude -p --output-format json --permission-mode acceptEdits'
+  # cwd: ~/my-project            # optional code directory (or ~ for any dir under home; defaults to per-task dir)
+  cmd: 'claude -p --add-dir "{task_dir}" --output-format json --permission-mode acceptEdits'
+  # Full-access / other CLI presets ({task_dir} expands to the task's files/ & out/ folder on any OS):
+  #   Claude (any dir + bash): 'claude -p --add-dir "{task_dir}" --output-format json --permission-mode bypassPermissions'
+  #   Codex CLI:               'codex exec --add-dir "{task_dir}" --full-auto --skip-git-repo-check -'   (output: tail)
+  #   Gemini CLI:              'gemini -p "" --include-directories "{task_dir}" --yolo --output-format json'
   timeout: 3600
   output: last_json              # last_json (JSON envelope on stdout) | tail (plain text)
   # manual instead of a CLI: kind: manual, manual_timeout_hours: 24, drop cmd/timeout/output

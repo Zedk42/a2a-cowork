@@ -263,6 +263,7 @@ const ZH = {  // server / agent / worker / driver / token stay English
   "all statuses": "全部状态", "filter…": "筛选…", "sure?": "确认？",
   "Conversation": "对话", "Events": "事件",
   "Click a command block below to copy:": "点击下方命令块即可复制：",
+  "Admin token:": "管理员 token：",
 };
 const t = s => LANG === "zh" ? (ZH[s] || s) : s;
 
@@ -880,11 +881,17 @@ async function showTask(id) {
 
 /* ---------- refresh ---------- */
 
+let AUTH_ASKED = false;
 async function poll() {
   if (document.hidden) return;
   try {
     const r = await api("/admin/data");
+    if (r.status === 401 && !AUTH_ASKED && (AUTH_ASKED = true)) {
+      const v = prompt(t("Admin token:"));
+      if (v != null) { document.cookie = "a2a_admin=" + encodeURIComponent(v) + "; path=/admin; SameSite=Strict"; AUTH_ASKED = false; return poll(); }
+    }
     if (!r.ok) throw new Error("HTTP " + r.status);
+    AUTH_ASKED = false;
     DATA = await r.json();
     render();
     $("#live-note").textContent = t("live · 3s");

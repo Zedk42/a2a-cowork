@@ -88,7 +88,7 @@ def run_command(driver_cfg, task, ws, marker, cancel_event, expected):
     task_file = os.path.join(ws, "task.txt")
     with open(task_file, "w", encoding="utf-8") as f:
         f.write(prompt)
-    cmd = driver_cfg["cmd"].replace("{task_file}", task_file)
+    cmd = driver_cfg["cmd"].replace("{task_file}", task_file).replace("{task_dir}", ws)
     try:
         proc = subprocess.Popen(cmd, shell=True, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",

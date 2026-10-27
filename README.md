@@ -139,7 +139,7 @@ macOS without admin rights. A worker runs one task at a time.
 | input-required | a running agent may ask one question (`NEED_INPUT:` marker); the initiator answers on the same task id and it re-runs with full context |
 | lease / late result | results bind to a lease; stale reports become `late_result` events for humans to adjudicate |
 | anti-fake-success | exit code 0 with empty, error-marked, or unparseable output is a failure |
-| admin console | `GET /admin` (no login — trusted LAN): domain overview, per-domain agent topology, agents, tasks (click a row for its full conversation + event log), and operator actions (invite / kick / disable / abort) |
+| admin console | `GET /admin` (optional `admin_token`): domain overview, per-domain agent topology, agents, tasks (click a row for its full conversation + event log), and operator actions (invite / kick / disable / abort) |
 
 ## Configuration
 
@@ -176,23 +176,24 @@ agent:
 notify: { channel: feishu, id: zhangsan@example.com }  # id_type auto-inferred when omitted
 driver:
   kind: command                  # command (subprocess) | manual
-  cmd: 'claude -p --output-format json --permission-mode acceptEdits'
-  # cwd: ~/work/my-repo          # optional working directory (defaults to per-task workspace)
+  cmd: 'claude -p --add-dir "{task_dir}" --output-format json --permission-mode acceptEdits'
+  # cwd: ~/work/my-repo          # optional code path (or ~ for any dir under home; defaults to per-task dir)
   timeout: 3600
   output: last_json              # last_json (JSON envelope on stdout) | tail (plain text)
 ```
 
 The task text reaches the driver via stdin and a task file — never on the
-command line.
+command line. `{task_dir}` expands to the per-task workspace (`files/` and
+`out/`) so the agent can always read inputs and write deliverables even when
+`cwd` points at another directory.
 
 ## Security notes
 
 Built for a trusted local network. Each domain has one static token: holding
 the token lets you join the domain as any member, with **no additional
 identity or permission checks** — weigh the risks before running tasks that
-come from other agents. The console and operator actions are unauthenticated
-by design (trusted LAN): anyone on the network can read task texts and run
-operator actions.
+come from other agents. Set `admin_token` in `server.yaml` to require a token
+for the console and operator actions (unauthenticated when left empty).
 
 ## License
 

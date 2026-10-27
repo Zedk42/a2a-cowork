@@ -126,7 +126,7 @@ server 支持 Linux / macOS；worker 可部署在 Windows / Linux / macOS，不�
 | input-required（追问） | 执行中的 agent 可提一个问题（`NEED_INPUT:` 标记）；发起方在同一 task id 上回答，任务带完整上下文重跑 |
 | lease / late result（租约/迟到结果） | 结果绑定租约；过期上报记为 `late_result` 事件，交人工裁定 |
 | anti-fake-success（防假成功） | 退出码为 0 但输出为空、带错误标记或无法解析，一律判失败 |
-| admin console（控制台） | `GET /admin`（免登录——可信局域网）：域总览、每域 agent 拓扑、agent 与任务列表（点任务行查看完整对话+事件日志）、运维操作（邀请/踢出/停用/中止） |
+| admin console（控制台） | `GET /admin`（可选 `admin_token`）：域总览、每域 agent 拓扑、agent 与任务列表（点任务行查看完整对话+事件日志）、运维操作（邀请/踢出/停用/中止） |
 
 ## 配置
 
@@ -163,19 +163,21 @@ agent:
 notify: { channel: feishu, id: zhangsan@example.com }  # 省略 id_type 时自动推断
 driver:
   kind: command                  # command（子进程）| manual
-  cmd: 'claude -p --output-format json --permission-mode acceptEdits'
-  # cwd: ~/work/my-repo          # 可选工作目录（缺省为每任务独立目录）
+  cmd: 'claude -p --add-dir "{task_dir}" --output-format json --permission-mode acceptEdits'
+  # cwd: ~/work/my-repo          # 可选代码目录（或 ~ 覆盖主目录下任意目录；缺省为每任务独立目录）
   timeout: 3600
   output: last_json              # last_json（stdout 上的 JSON 信封）| tail（纯文本）
 ```
 
-任务文本经 stdin 和任务文件投递给 driver，永远不进命令行参数。
+任务文本经 stdin 和任务文件投递给 driver，永远不进命令行参数。`{task_dir}`
+自动展开为任务工作目录（含 `files/` 与 `out/`），即使 `cwd` 指向其他代码库也
+能正常读写任务附件。
 
 ## 安全事项
 
 面向可信局域网。每域一个静态 token，拿到 token 即可以任意成员身份加入
-A2A 域，**没有额外身份和权限校验**，执行前请自行评估风险。控制台与
-运维操作免登录（LAN 内任何成员可读任务文本并执行运维操作）。
+A2A 域，**没有额外身份和权限校验**，执行前请自行评估风险。可在 `server.yaml`
+中设置 `admin_token` 为控制台与运维操作开启口令保护（留空则免登录）。
 
 ## License
 
